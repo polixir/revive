@@ -1,0 +1,24 @@
+metadata:
+  columns:
+  - obs_0:
+      dim: obs
+      type: continuous
+  - obs_1:
+      dim: obs
+      type: continuous
+  - action_0:
+      dim: act
+      type: continuous
+  - reward:
+      dim: rew
+      type: continuous
+  graph:
+    act:
+    - obs
+    next_obs:
+    - obs
+    - act
+    - rew
+    rew:
+    - obs
+    - act

@@ -1,0 +1,36 @@
+metadata:
+  version: multiple_transition-20210913
+  columns:
+  - o0:
+      dim: o
+      type: continuous
+  - o1:
+      dim: o
+      type: continuous
+  - o2:
+      dim: o
+      type: continuous
+  - a0:
+      dim: a
+      type: continuous
+  - a1:
+      dim: a
+      type: continuous
+  - s0:
+      dim: s
+      type: continuous
+  - s1:
+      dim: s
+      type: continuous
+  graph:
+    a:
+    - o
+    - s
+    next_s:
+    - o
+    - s
+    - a
+    next_o:
+    - s
+    - a
+    - next_s

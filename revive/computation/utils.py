@@ -1,15 +1,29 @@
-import ray
+''''''
+"""
+    POLIXIR REVIVE, copyright (C) 2021 Polixir Technologies Co., Ltd., is 
+    distributed under the GNU Lesser General Public License (GNU LGPL). 
+    POLIXIR REVIVE is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public
+    License as published by the Free Software Foundation; either
+    version 3 of the License, or (at your option) any later version.
+
+    This library is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+    Lesser General Public License for more details.
+"""
+
 import torch
-import pickle
 import numpy as np
-from copy import deepcopy
-from torch.functional import F
 from numbers import Number
-from tianshou.data import Batch
+from torch.functional import F
+from typing import Callable, Tuple
 
-import neorl
+from revive.data.batch import Batch
+from revive.computation.dists import ReviveDistribution
 
-def soft_clamp(x : torch.Tensor, _min=None, _max=None):
+
+def soft_clamp(x : torch.Tensor, _min=None, _max=None) -> torch.Tensor:
     # clamp tensor values while mataining the gradient
     if _max is not None:
         x = _max - F.softplus(_max - x)
@@ -23,7 +37,7 @@ def get_input_from_names(batch : Batch, names : list):
         input.append(batch[name])
     return torch.cat(input, dim=-1)
 
-def get_input_from_graph(graph : dict, 
+def get_input_from_graph(graph, 
                          output_name : str, 
                          batch_data : Batch):
     input_names = graph[output_name]
@@ -32,21 +46,21 @@ def get_input_from_graph(graph : dict,
         inputs.append(batch_data[input_name])
     return torch.cat(inputs, dim=-1)
 
-def get_sample_function(deterministic : bool):
+def get_sample_function(deterministic : bool) -> Callable[[ReviveDistribution], torch.Tensor]:
     if deterministic:
         sample_fn = lambda dist: dist.mode
     else:
         sample_fn = lambda dist: dist.rsample()
     return sample_fn
     
-def to_numpy(x):
+def to_numpy(x : Tuple[np.ndarray, torch.Tensor]) -> np.ndarray:
     """Return an object without torch.Tensor."""
     if isinstance(x, torch.Tensor):
         x = x.detach().cpu().numpy()
 
     return x
 
-def to_torch(x, dtype=torch.float32, device="cpu"):
+def to_torch(x : Tuple[np.ndarray, torch.Tensor], dtype=torch.float32, device : str = "cpu") -> torch.Tensor:
     """Return an object without torch.Tensor."""
 
     if isinstance(x, torch.Tensor):
@@ -64,18 +78,3 @@ def to_torch(x, dtype=torch.float32, device="cpu"):
         else:
             raise TypeError(f"object {x} cannot be converted to torch.")
     return x
-
-def create_env(task : str):
-    try:
-        if task in ["HalfCheetah-v3", "Hopper-v3", "Walker2d-v3", "ib", "finance", "citylearn"]:
-            env = neorl.make(task)
-        elif task in ['halfcheetah-meidum-v0', 'hopper-medium-v0', 'walker2d-medium-v0']:
-            import d4rl
-            env = gym.make(task)
-        else:
-            env = gym.make(task)
-    except:
-        print(f'Warning: task {task} can not be created!')
-        env = None
-
-    return env

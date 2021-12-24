@@ -1,0 +1,51 @@
+metadata:
+  version: parameter_tunning-20210910
+  graph:
+    action:
+    - obs
+    - parameter
+    next_obs:
+    - obs
+    - action   
+  tunable:
+  - parameter 
+  columns:
+  - parameter_0:
+      dim: parameter
+      type: continuous
+      max: 1
+      min: 0
+  - parameter_1:
+      dim: parameter
+      type: discrete
+      max: 1
+      min: -1
+      num: 3
+  - parameter_2:
+      dim: parameter
+      type: category
+      values: [3, 5, 10, 15]
+  - obs_0:
+      dim: obs
+      type: continuous
+      max: 1
+      min: 0
+  - obs_1:
+      dim: obs
+      type: continuous
+  - obs_2:
+      dim: obs
+      type: continuous
+  - obs_3:
+      dim: obs
+      type: discrete
+      max: 10
+      min: 2
+      num: 9
+  - action_0:
+      dim: action
+      type: continuous
+  - action_1:
+      dim: action
+      type: category
+      values: [4, 6, 10, 16]

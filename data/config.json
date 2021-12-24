@@ -1,0 +1,414 @@
+{
+    "base_config": [
+        {
+            "name": "global_seed",
+            "abbreviation": "gs",
+            "description": "Set the random number seed for the experiment.",
+            "type": "int",
+            "default": 42,
+            "tune": true
+        },
+        {
+            "name": "val_split_ratio",
+            "abbreviation": "vsr",
+            "description": "Ratio to split validate dataset if it is not explicitly given.",
+            "type": "float",
+            "default": 0.5,
+            "tune": true
+        },
+        {
+            "name": "val_split_mode",
+            "abbreviation": "vsm",
+            "description": "Mode of auto splitting training and validation dataset, choose from `outside_traj` and `inside_traj`. `outside_traj` means the split is happened outside the trajectories, one trajectory can only be in one dataset. `inside_traj` means the split is happened inside the trajectories, former part of one trajectory is in training set, later part is in validation set.",
+            "type": "str",
+            "default": "outside_traj",
+            "tune": true
+        },
+        {
+            "name": "venv_rollout_horizon",
+            "abbreviation": "vrh",
+            "description": "Length of sampled trajectory, validate only if the algorithm works on sequential data.",
+            "type": "int",
+            "default": 10,
+            "tune": true
+        },
+        {
+            "name": "venv_gpus_per_worker",
+            "abbreviation": "vgpw",
+            "description": "Number of gpus per worker in venv training, small than 1 means launch multiple workers on the same gpu.",
+            "type": "float",
+            "default": 1.0,
+            "tune": true
+        },
+        {
+            "name": "venv_metric",
+            "description": "Metric used to evaluate the trained venv, choose from `nll`, `mae`, `mse`.",
+            "type": "str",
+            "default": "mae",
+            "tune": true
+        },
+        {
+            "name": "venv_algo",
+            "description": "Algorithm used in venv training. There are currently two algorithms to choose from, `revive` and `bc`.",
+            "type": "str",
+            "default": "revive",
+            "tune": true
+        },
+        {
+            "name": "policy_gpus_per_worker",
+            "abbreviation": "gpgw",
+            "description": "Number of gpus per worker in venv training, small than 1 means launch multiple workers on the same gpu.",
+            "type": "float",
+            "default": 1.0,
+            "tune": true
+        },
+        {
+            "name": "test_horizon",
+            "abbreviation": "th",
+            "description": "Rollout length of the venv test.",
+            "type": "int",
+            "default": 10,
+            "tune": true
+        },
+        {
+            "name": "train_venv_trials",
+            "abbreviation": "tvt",
+            "description": "Number of total trails searched by the search algorithm in venv training.",
+            "type": "int",
+            "default": 25,
+            "tune": true
+        },
+        {
+            "name": "train_policy_trials",
+            "abbreviation": "tpt",
+            "description": "Number of total trails searched by the search algorithm in policy training.",
+            "type": "int",
+            "default": 10,
+            "tune": true
+        }
+    ],
+    "venv_algo_config": {
+        "revive": [
+            {
+                "name": "revive_batch_size",
+                "description": "Batch size of training process.",
+                "abbreviation": "mbs",
+                "type": "int",
+                "default": 1024,
+                "tune": true
+            },
+            {
+                "name": "revive_epoch",
+                "description": "Number of epcoh for the training process",
+                "abbreviation": "mep",
+                "type": "int",
+                "default": 5000,
+                "tune": true
+            },
+            {
+                "name": "policy_hidden_features",
+                "description": "Number of neurons per layer of the policy network.",
+                "abbreviation": "phf",
+                "type": "int",
+                "default": 256,
+                "tune": true
+            },
+            {
+                "name": "policy_hidden_layers",
+                "description": "Depth of policy network.",
+                "abbreviation": "phl",
+                "type": "int",
+                "default": 4,
+                "tune": true
+            },
+            {
+                "name": "policy_backbone",
+                "description": "Backbone of policy network.",
+                "abbreviation": "pb",
+                "type": "str",
+                "default": "mlp",
+                "tune": true
+            },
+            {
+                "name": "transition_hidden_features",
+                "description": "Number of neurons per layer of the transition network.",
+                "abbreviation": "thf",
+                "type": "int",
+                "default": 256,
+                "tune": true
+            },
+            {
+                "name": "transition_hidden_layers",
+                "abbreviation": "thl",
+                "type": "int",
+                "default": 4,
+                "tune": true
+            },
+            {
+                "name": "transition_backbone",
+                "description": "Backbone of Transition network.",
+                "abbreviation": "tb",
+                "type": "str",
+                "default": "res",
+                "tune": true
+            },
+            {
+                "name": "discriminator_hidden_features",
+                "description": "Number of neurons per layer of the discriminator network.",
+                "abbreviation": "dhf",
+                "type": "int",
+                "default": 256,
+                "tune": true
+            },
+            {
+                "name": "discriminator_hidden_layers",
+                "description": "Depth of the discriminator network.",
+                "abbreviation": "dhl",
+                "type": "int",
+                "default": 4,
+                "tune": true
+            },
+            {
+                "name": "g_steps",
+                "description": "The number of update rounds of the generator in each epoch.",
+                "type": "int",
+                "default": 1,
+                "search_mode": "grid",
+                "search_values": [
+                    1,
+                    3,
+                    5
+                ],
+                "tune": true
+            },
+            {
+                "name": "d_steps",
+                "description": "Number of update rounds of discriminator in each epoch.",
+                "type": "int",
+                "default": 1,
+                "search_mode": "grid",
+                "search_values": [
+                    1,
+                    3,
+                    5
+                ],
+                "tune": true
+            },
+            {
+                "name": "g_lr",
+                "description": "Initial learning rate of the generator.",
+                "type": "float",
+                "default": 4e-05,
+                "search_mode": "continuous",
+                "search_values": [
+                    1e-06,
+                    0.0001
+                ],
+                "tune": true
+            },
+            {
+                "name": "d_lr",
+                "description": "Initial learning rate of the discriminator.",
+                "type": "float",
+                "default": 0.0006,
+                "search_mode": "continuous",
+                "search_values": [
+                    1e-06,
+                    0.001
+                ],
+                "tune": true
+            }
+        ],
+        "bc": [
+            {
+                "name": "bc_batch_size",
+                "description": "Batch size of training process.",
+                "abbreviation": "bbs",
+                "type": "int",
+                "default": 256,
+                "tune": true
+            },
+            {
+                "name": "bc_epoch",
+                "description": "Number of epcoh for the training process",
+                "abbreviation": "bep",
+                "type": "int",
+                "default": 500,
+                "tune": true
+            },
+            {
+                "name": "policy_hidden_features",
+                "description": "Number of neurons per layer of the policy network.",
+                "abbreviation": "phf",
+                "type": "int",
+                "default": 256,
+                "tune": true
+            },
+            {
+                "name": "policy_hidden_layers",
+                "description": "Depth of policy network.",
+                "abbreviation": "phl",
+                "type": "int",
+                "default": 4,
+                "search_mode": "grid",
+                "search_values": [
+                    3,
+                    4,
+                    5
+                ],
+                "tune": true
+            },
+            {
+                "name": "policy_backbone",
+                "description": "Backbone of policy network.",
+                "abbreviation": "pb",
+                "type": "str",
+                "default": "mlp",
+                "search_mode": "grid",
+                "search_values": [
+                    "mlp",
+                    "res"
+                ],
+                "tune": true
+            },
+            {
+                "name": "g_lr",
+                "description": "Initial learning rate of the training process.",
+                "type": "float",
+                "default": 0.0001,
+                "search_mode": "continuous",
+                "search_values": [
+                    1e-06,
+                    0.001
+                ],
+                "tune": true
+            }
+        ]
+    },
+    "policy_algo_config": {
+        "ppo": [
+            {
+                "name": "ppo_batch_size",
+                "description": "Batch size of training process.",
+                "abbreviation": "pbs",
+                "type": "int",
+                "default": 256,
+                "tune": true
+            },
+            {
+                "name": "ppo_epoch",
+                "description": "Number of epcoh for the training process",
+                "abbreviation": "bep",
+                "type": "int",
+                "default": 200,
+                "tune": true
+            },
+            {
+                "name": "policy_hidden_features",
+                "description": "Number of neurons per layer of the policy network.",
+                "abbreviation": "phf",
+                "type": "int",
+                "default": 256,
+                "tune": true
+            },
+            {
+                "name": "policy_hidden_layers",
+                "description": "Depth of policy network.",
+                "abbreviation": "phl",
+                "type": "int",
+                "default": 4,
+                "tune": true
+            },
+            {
+                "name": "policy_backbone",
+                "description": "Backbone of policy network.",
+                "abbreviation": "pb",
+                "type": "str",
+                "default": "mlp",
+                "tune": true
+            },
+            {
+                "name": "g_lr",
+                "description": "Initial learning rate of the training process.",
+                "type": "float",
+                "default": 4e-05,
+                "search_mode": "continuous",
+                "search_values": [
+                    1e-06,
+                    0.001
+                ],
+                "tune": true
+            }
+        ],
+        "sac": [
+            {
+                "name": "sac_batch_size",
+                "description": "Batch size of training process.",
+                "abbreviation": "pbs",
+                "type": "int",
+                "default": 1024,
+                "tune": true
+            },
+            {
+                "name": "sac_epoch",
+                "description": "Number of epcoh for the training process.",
+                "abbreviation": "bep",
+                "type": "int",
+                "default": 200,
+                "tune": true
+            },
+            {
+                "name": "sac_steps_per_epoch",
+                "description": "The number of update rounds of sac in each epoch.",
+                "abbreviation": "sspe",
+                "type": "int",
+                "default": 200,
+                "tune": true
+            },
+            {
+                "name": "policy_hidden_features",
+                "description": "Number of neurons per layer of the policy network.",
+                "abbreviation": "phf",
+                "type": "int",
+                "default": 256,
+                "tune": true
+            },
+            {
+                "name": "policy_hidden_layers",
+                "description": "Depth of policy network.",
+                "abbreviation": "phl",
+                "type": "int",
+                "default": 4,
+                "tune": true
+            },
+            {
+                "name": "policy_backbone",
+                "description": "Backbone of policy network.",
+                "abbreviation": "pb",
+                "type": "str",
+                "default": "mlp",
+                "tune": true
+            },
+            {
+                "name": "buffer_size",
+                "description": "Size of the buffer to store data.",
+                "abbreviation": "bfs",
+                "type": "int",
+                "default": 1000000.0,
+                "tune": true
+            },
+            {
+                "name": "g_lr",
+                "description": "Initial learning rate of the training process.",
+                "type": "float",
+                "default": 4e-05,
+                "search_mode": "continuous",
+                "search_values": [
+                    1e-06,
+                    0.001
+                ],
+                "tune": true
+            }
+        ]
+    }
+}

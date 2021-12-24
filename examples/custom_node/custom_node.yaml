@@ -1,0 +1,42 @@
+metadata:
+  version: custom_node-20210902
+  columns:
+  - obs_0:
+      dim: obs
+      type: continuous
+  - obs_1:
+      dim: obs
+      type: continuous
+  - obs_2:
+      dim: obs
+      type: continuous
+  - obs_3:
+      dim: obs
+      type: continuous
+  - obs_4:
+      dim: obs
+      type: continuous
+  - engine_index:
+      dim: engine_index
+      type: category
+      values: [0, 1, 2]
+  - engine_action_0:
+      dim: engine_action
+      type: continuous
+  - engine_action_1:
+      dim: engine_action
+      type: continuous
+  - engine_action_2:
+      dim: engine_action
+      type: continuous
+  graph:
+    engine_index:
+    - obs
+    engine_action:
+    - obs
+    - engine_index
+    next_obs:
+    - obs
+    - engine_action
+  custom_nodes: 
+    engine_action: 'custom_node.EngineNode'

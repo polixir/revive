@@ -1,0 +1,36 @@
+metadata:
+  version: expert_function-20210902
+  graph:
+    action:
+    - obs
+    next_obs:
+    - obs
+    - action    
+  columns:
+  - obs_0:
+      dim: obs
+      type: continuous
+      max: 1
+      min: 0
+  - obs_1:
+      dim: obs
+      type: continuous
+  - obs_2:
+      dim: obs
+      type: continuous
+  - obs_3:
+      dim: obs
+      type: discrete
+      max: 10
+      min: 2
+      num: 9
+  - action_0:
+      dim: action
+      type: continuous
+  - action_1:
+      dim: action
+      type: category
+      values: [4, 6, 10, 16]
+  expert_functions:   
+    next_obs:     
+      'node_function' : 'expert_function.dynamics'    

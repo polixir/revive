@@ -1,9 +1,25 @@
-import torch
-from torch import nn
-from torch.functional import F
+''''''
+"""
+    POLIXIR REVIVE, copyright (C) 2021 Polixir Technologies Co., Ltd., is 
+    distributed under the GNU Lesser General Public License (GNU LGPL). 
+    POLIXIR REVIVE is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public
+    License as published by the Free Software Foundation; either
+    version 3 of the License, or (at your option) any later version.
 
-from revive_core.dists import *
-from revive_core.utils import *
+    This library is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+    Lesser General Public License for more details.
+"""
+
+import torch
+import warnings
+from torch import nn
+from typing import Optional, Union, List
+
+from revive.computation.dists import *
+from revive.computation.utils import *
 
 ACTIVATION_CREATORS = {
     'relu' : lambda dim: nn.ReLU(inplace=True),
@@ -18,14 +34,15 @@ ACTIVATION_CREATORS = {
 }
 
 class Swish(nn.Module):
-    def forward(self, x):
+    def forward(self, x : torch.Tensor) -> torch.Tensor:
         return x * torch.sigmoid(x)
 
 # -------------------------------- Backbones -------------------------------- #
 class MLP(nn.Module):
     r"""
         Multi-layer Perceptron
-        Inputs:
+
+        Args:
         
             in_features : int, features numbers of the input
 
@@ -44,7 +61,8 @@ class MLP(nn.Module):
     def __init__(self, 
                  in_features : int, 
                  out_features : int, 
-                 hidden_features : int, hidden_layers : int, 
+                 hidden_features : int, 
+                 hidden_layers : int, 
                  norm : str = None, 
                  hidden_activation : str = 'leakyrelu', 
                  output_activation : str = 'identity'):
@@ -74,16 +92,12 @@ class MLP(nn.Module):
             net.append(output_activation_creator(out_features))
             self.net = nn.Sequential(*net)
 
-    def forward(self, x):
-        r"""forward method of MLP only assume the last dim of x matches `in_features`"""
-        head_shape = x.shape[:-1]
-        x = x.view(-1, x.shape[-1])
-        out = self.net(x)
-        out = out.view(*head_shape, out.shape[-1])
-        return out
+    def forward(self, x : torch.Tensor) -> torch.Tensor:
+        r""" forward method of MLP only assume the last dim of x matches `in_features` """
+        return self.net(x)
 
 class ResBlock(nn.Module):
-    def __init__(self, input_feature : int, output_feature : int, norm : str='bn'):
+    def __init__(self, input_feature : int, output_feature : int, norm : str = 'bn'):
         super().__init__()
 
         if norm == 'ln':
@@ -105,7 +119,8 @@ class ResBlock(nn.Module):
         else:
             self.skip_net = torch.nn.Identity()
 
-    def forward(self, x):
+    def forward(self, x : torch.Tensor) -> torch.Tensor:
+        '''x should be a 2D Tensor due to batchnorm'''
         return self.process_net(x) + self.skip_net(x)
 
 class ResNet(torch.nn.Module):
@@ -129,12 +144,13 @@ class ResNet(torch.nn.Module):
 
         self.resnet = torch.nn.Sequential(*modules)
 
-    def forward(self, x):
+    def forward(self, x : torch.Tensor) -> torch.Tensor:
+        '''NOTE: reshape is needed since resblock only support 2D Tensor'''
         shape = x.shape
         x = x.view(-1, shape[-1])
         output = self.resnet(x)
         output = output.view(*shape[:-1], -1)
-        return output   
+        return output 
 
 class Transformer1D(nn.Module):
     def __init__(self, 
@@ -158,7 +174,7 @@ class Transformer1D(nn.Module):
         encoder_layer = torch.nn.TransformerEncoderLayer(transformer_features, transformer_heads, 512)
         self.transformer = torch.nn.TransformerEncoder(encoder_layer, transformer_layers)   
 
-    def forward(self, x):
+    def forward(self, x : torch.Tensor) -> torch.Tensor:
         shape = x.shape
         x = x.view(-1, x.shape[-1]) # [B, I]
         x = self.linear(x) # [B, O]
@@ -173,10 +189,10 @@ class Transformer1D(nn.Module):
 
 class DistributionWrapper(nn.Module):
     r"""wrap output of Module to distribution"""
-    BASE_TYPES = ['normal', 'gmm', 'onehot']
+    BASE_TYPES = ['normal', 'gmm', 'onehot', 'discrete_logistic']
     SUPPORTED_TYPES = BASE_TYPES + ['mix']
 
-    def __init__(self, distribution_type='normal', **params):
+    def __init__(self, distribution_type : str = 'normal', **params):
         super().__init__()
         self.distribution_type = distribution_type
         self.params = params
@@ -193,6 +209,8 @@ class DistributionWrapper(nn.Module):
             self.min_logstd = nn.Parameter(torch.ones(self.params['mixture'], self.params['dim']) * -10, requires_grad=True)            
             if not self.params.get('conditioned_std', True):
                 self.logstd = nn.Parameter(torch.zeros(self.params['mixture'], self.params['dim']), requires_grad=True)
+        elif self.distribution_type == 'discrete_logistic':
+            self.num = self.params['num']
         elif self.distribution_type == 'mix':
             assert 'dist_config' in self.params.keys(), "You need to provide `dist_config` for Mix distribution"
 
@@ -212,7 +230,13 @@ class DistributionWrapper(nn.Module):
                 
             self.wrapper_list = nn.ModuleList(self.wrapper_list)                                     
 
-    def forward(self, x, adapt_std=None, payload=None):
+    def forward(self, x : torch.Tensor, adapt_std : Optional[torch.Tensor] = None, payload : Optional[torch.Tensor] = None) -> ReviveDistribution:
+        '''
+            Warp the given tensor to distribution
+
+            :param adapt_std : it will overwrite the std part of the distribution (optional)
+            :param payload : payload will be applied to the output distribution after built (optional)
+        '''
         if self.distribution_type == 'normal':
             if self.params.get('conditioned_std', True):
                 mu, logstd = torch.chunk(x, 2, dim=-1)
@@ -239,7 +263,11 @@ class DistributionWrapper(nn.Module):
             stds = adapt_std if adapt_std is not None else torch.exp(soft_clamp(logstds, self.min_logstd, self.max_logstd))
             return GaussianMixture(mus, stds, logits)
         elif self.distribution_type == 'onehot':
-            return Onehot(10 * torch.tanh(x / 10)) # stabilize gradients
+            return Onehot(x)
+        elif self.distribution_type == 'discrete_logistic':
+            mu, logstd = torch.chunk(x, 2, dim=-1)
+            logstd = torch.clamp_min(logstd, -7)
+            return DiscreteLogistic(mu, torch.exp(logstd), num=self.num)
         elif self.distribution_type == 'mix':
             xs = torch.split(x, self.output_sizes, dim=-1)
             
@@ -270,10 +298,10 @@ class FeedForwardPolicy(torch.nn.Module):
                  out_features : int, 
                  hidden_features : int, 
                  hidden_layers : int, 
-                 dist_config : dict,
+                 dist_config : list,
                  norm : str = None, 
                  hidden_activation : str = 'leakyrelu', 
-                 backbone_type='mlp'):
+                 backbone_type : Union[str, np.str] = 'mlp'):
         super().__init__()
 
         if backbone_type == 'mlp':
@@ -283,17 +311,20 @@ class FeedForwardPolicy(torch.nn.Module):
         elif backbone_type == 'transformer':
             self.backbone = Transformer1D(in_features, out_features, hidden_features, transformer_layers=hidden_layers)
         else:
-            raise NotImplementedError(f'backbone type {backbone} is not supported')
+            raise NotImplementedError(f'backbone type {backbone_type} is not supported')
 
         self.dist_wrapper = DistributionWrapper('mix', dist_config=dist_config)
 
-    def forward(self, state : torch.Tensor, adapt_std : torch.Tensor=None):
+    def forward(self, state : torch.Tensor, adapt_std : Optional[torch.Tensor] = None) -> ReviveDistribution:
         output = self.backbone(state)
         dist = self.dist_wrapper(output, adapt_std)
         return dist
+
+    def reset(self):
+        pass
     
     @torch.no_grad()
-    def get_action(self, state : torch.Tensor, deterministic : bool=True):
+    def get_action(self, state : torch.Tensor, deterministic : bool = True):
         dist = self(state)
         return dist.mode if deterministic else dist.sample()
 
@@ -303,8 +334,8 @@ class RecurrentPolicy(torch.nn.Module):
                  out_features : int, 
                  hidden_features : int, 
                  hidden_layers : int, 
-                 dist_config : dict, 
-                 backbone_type : str = 'gru'):
+                 dist_config : list, 
+                 backbone_type : Union[str, np.str] ='gru'):
         super().__init__()
 
         RNN = torch.nn.GRU if backbone_type == 'gru' else torch.nn.LSTM
@@ -316,7 +347,7 @@ class RecurrentPolicy(torch.nn.Module):
     def reset(self):
         self.h = None
 
-    def forward(self, x, adapt_std=None):
+    def forward(self, x : torch.Tensor, adapt_std : Optional[torch.Tensor] = None) -> ReviveDistribution:
         if len(x.shape) == 2:
             x = x.unsqueeze(0)
             rnn_output, self.h = self.rnn(x, self.h)
@@ -333,23 +364,33 @@ class FeedForwardTransition(FeedForwardPolicy):
                  out_features : int, 
                  hidden_features : int, 
                  hidden_layers : int, 
-                 dist_config : dict,
-                 norm : str = None, 
+                 dist_config : list,
+                 norm : Optional[str] = None, 
                  hidden_activation : str = 'leakyrelu', 
-                 backbone_type='mlp',
-                 mode='global',
-                 obs_dim=None):
+                 backbone_type : Union[str, np.str] = 'mlp',
+                 mode : str = 'global',
+                 obs_dim : Optional[int] = None):
         
         self.mode = mode
         self.obs_dim = obs_dim
 
-        if self.mode == 'local': assert not 'onehot' in [config['type'] for config in dist_config], \
-            "The local mode of transition is not compatible with onehot data! Please fallback to global mode!"
+        if self.mode == 'local': 
+            dist_types = [config['type'] for config in dist_config]
+            if 'onehot' in dist_types or 'discrete_logistic' in dist_types:
+                warnings.warn('Detect distribution type that are not compatible with the local mode, fallback to global mode!')
+                self.mode = 'global'
+
+        if self.mode == 'local': assert self.obs_dim is not None, \
+            "For local mode, the dim of observation should be given!"
+        
 
         super(FeedForwardTransition, self).__init__(in_features, out_features, hidden_features, hidden_layers, 
                                                     dist_config, norm, hidden_activation, backbone_type)
 
-    def forward(self, state : torch.Tensor, adapt_std : torch.Tensor=None):
+    def reset(self):
+        pass
+
+    def forward(self, state : torch.Tensor, adapt_std : Optional[torch.Tensor] = None) -> ReviveDistribution:
         dist = super(FeedForwardTransition, self).forward(state, adapt_std)
         if self.mode == 'local' and self.obs_dim is not None:
             dist = dist.shift(state[..., :self.obs_dim])
@@ -361,10 +402,10 @@ class RecurrentTransition(RecurrentPolicy):
                  out_features : int, 
                  hidden_features : int, 
                  hidden_layers : int, 
-                 dist_config : dict,
-                 backbone_type='mlp',
-                 mode='global',
-                 obs_dim=None):
+                 dist_config : list,
+                 backbone_type : Union[str, np.str] = 'mlp',
+                 mode : str = 'global',
+                 obs_dim : Optional[int] = None):
         
         self.mode = mode
         self.obs_dim = obs_dim
@@ -377,7 +418,7 @@ class RecurrentTransition(RecurrentPolicy):
         super(RecurrentTransition, self).__init__(in_features, out_features, hidden_features, hidden_layers, 
                                                   dist_config, backbone_type)
 
-    def forward(self, state : torch.Tensor, adapt_std : torch.Tensor=None):
+    def forward(self, state : torch.Tensor, adapt_std : Optional[torch.Tensor] = None) -> ReviveDistribution:
         dist = super(RecurrentTransition, self).forward(state, adapt_std)
         if self.mode == 'local' and self.obs_dim is not None:
             dist = dist.shift(state[..., :self.obs_dim])
@@ -391,7 +432,7 @@ class FeedForwardDiscriminator(torch.nn.Module):
                  hidden_layers : int, 
                  hidden_activation : str = 'leakyrelu', 
                  norm : str = None,
-                 backbone_type : str = 'mlp'):
+                 backbone_type : Union[str, np.str] = 'mlp'):
         super().__init__()
 
         if backbone_type == 'mlp':
@@ -405,9 +446,9 @@ class FeedForwardDiscriminator(torch.nn.Module):
                 torch.nn.Sigmoid(),
             ) 
         else:
-            raise NotImplementedError(f'backbone type {backbone} is not supported')
+            raise NotImplementedError(f'backbone type {backbone_type} is not supported')
 
-    def forward(self, *inputs):
+    def forward(self, *inputs : List[torch.Tensor]) -> torch.Tensor:
         x = torch.cat(inputs, dim=-1)
         return self.backbone(x)
 
@@ -416,7 +457,7 @@ class RecurrentDiscriminator(torch.nn.Module):
                  in_features : int, 
                  hidden_features : int, 
                  hidden_layers : int, 
-                 backbone_type : str = 'gru', 
+                 backbone_type : Union[str, np.str] = 'gru', 
                  bidirect : bool = False):
         super().__init__()
 
@@ -426,7 +467,7 @@ class RecurrentDiscriminator(torch.nn.Module):
 
         self.output_layer = MLP(hidden_features * (2 if bidirect else 1), 1, 0, 0, output_activation='sigmoid')
 
-    def forward(self, *inputs):
+    def forward(self, *inputs : List[torch.Tensor]) -> torch.Tensor:
         x = torch.cat(inputs, dim=-1)
         rnn_output = self.rnn(x)[0]
         return self.output_layer(rnn_output)
@@ -451,7 +492,7 @@ class HierarchicalDiscriminator(torch.nn.Module):
         self.process_layers = torch.nn.ModuleList(process_layers)
         self.output_layers = torch.nn.ModuleList(output_layers)
 
-    def forward(self, *inputs):
+    def forward(self, *inputs : List[torch.Tensor]) -> torch.Tensor:
         assert len(inputs) == len(self.in_features)
         last_feature = inputs[0]
         result = 0
