@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -30,6 +30,18 @@ def soft_clamp(x : torch.Tensor, _min=None, _max=None) -> torch.Tensor:
     if _min is not None:
         x = _min + F.softplus(x - _min)
     return x
+
+def maintain_gradient_hard_clamp(x : torch.Tensor, _min=None, _max=None) -> torch.Tensor:
+    # clamp tensor values with hard constrain while mataining the gradient
+    output = torch.clamp(x, _min, _max)
+    left_mask = torch.zeros(x.shape, dtype=bool) if _min is None else x < _min
+    right_mask = torch.zeros(x.shape, dtype=bool) if _max is None else x > _max
+    mask = torch.logical_or(left_mask, right_mask).to(output)
+    output = output + mask * (x - x.detach())
+    return output
+
+def safe_atanh(x):
+    return torch.atanh(maintain_gradient_hard_clamp(x, -0.999, 0.999))
 
 def get_input_from_names(batch : Batch, names : list):
     input = []

@@ -2,14 +2,14 @@
 
 POLIXIR REVIVE is released subject to the [POLIXIR Commercial License](./License_en.txt), unless otherwise indicated. Please read and agree the accompanying license file carefully before downloading, installing or using the Polixir software or any accompanying files.
 
-Unless otherwise noted, all files Copyright © 2021 Polixir Technologies, Co., Ltd.
+Unless otherwise noted, all files Copyright © 2021 - 2022 Polixir Technologies, Co., Ltd.
 
 
 # Introduction
 
-Revive is a general platform that aims to bring automatic decision-making to real-world scenario.
+REVIVE is a general platform that aims to bring automatic decision-making to real-world scenarios.
 The platform operates in a pipeline of two steps:
-1. **Venv Training:** A virtual-environment model is trained from any offline data to mimic each agent's policy along with the transition between states (also known as nature policy).
+1. **Venv Training:** A virtual-environment model is trained from any offline data to mimic each agent's policy along with the transition between states (also known as nature's policy).
 2. **Policy Training:** Treat one of the agents as the active agent and freeze others as its environment. Train the active agent with reinforcement learning to derive a better policy for the agent.
 
 
@@ -45,7 +45,23 @@ The revive library was developed by polixir, we have encrypted and protected a s
 revive that have their own intellectual property rights, you can apply for a license to use the complete algorithm 
 package functionality.
 
-**Application Page :** <https://www.revive.cn>
+The process of applying for a License can be divided into the following
+two steps:
+
+**Step 1**. Get machine information using the installed REVIVE SDK.
+After running the following command, a file named `machine_info.json`
+will be generated in the `licenses` folder.
+
+``` {.sh}
+$ cd licenses
+$ python get_machine_info.py
+```
+
+**Step 2**. Apply for a license for the machine by uploading the
+file(`machine_info.json`) obtained in the previous step on the REVIVE
+Website.
+
+**REVIVE Website :** <https://www.revive.cn>
 
 ###  Use the License
 

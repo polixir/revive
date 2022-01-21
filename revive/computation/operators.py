@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public

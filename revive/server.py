@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -126,7 +126,7 @@ class ReviveServer:
         self._check_license()
         assert policy_mode == 'None' or tuning_mode == 'None', 'Cannot perform both policy training and parameter tuning!'
 
-        ray.init(address=address) 
+        # ray.init(local_mode=True) # debug only
 
         ''' get config '''
         config = DEBUG_CONFIG if debug else DEFAULT_CONFIG
@@ -156,9 +156,11 @@ class ReviveServer:
         self.data_file = dataset_file_path
         self.config_file = dataset_desc_file_path
         self.val_file = val_file_path
-        self.dataset = OfflineDataset(self.data_file, self.config_file)
+        self.dataset = OfflineDataset(self.data_file, self.config_file, self.config['ignore_check'])
+        self.runtime_env = {"env_vars": {"PYTHONPATH":os.pathsep.join(sys.path)}}
+        ray.init(address=address, runtime_env=self.runtime_env)
         if self.val_file:
-            self.val_dataset = OfflineDataset(self.val_file, self.config_file)
+            self.val_dataset = OfflineDataset(self.val_file, self.config_file, self.config['ignore_check'])
             self.val_dataset.processor = self.dataset.processor # make sure dataprocessing is the same
             self.config['val_dataset'] = ray.put(self.val_dataset)
         else: # split the training set if validation set is not provided
@@ -189,7 +191,7 @@ class ReviveServer:
             pickle.dump(self.config['graph'], f)
 
         ''' setup data buffers '''
-        self.driver_ip = ray.services.get_node_ip_address()
+        self.driver_ip = ray._private.services.get_node_ip_address()
         self.venv_data_buffer = ray.remote(DataBufferEnv).options(resources={f"node:{self.driver_ip}" : 0.001}).remote(venv_max_num=self.config['num_venv_store'])
         self.policy_data_buffer = ray.remote(DataBufferPolicy).options(resources={f"node:{self.driver_ip}" : 0.001}).remote()
         self.tuner_data_buffer = ray.remote(DataBufferTuner).options(resources={f"node:{self.driver_ip}" : 0.001}).remote(self.tuning_mode, self.config['parameter_tuning_budget'])
@@ -404,7 +406,7 @@ class ReviveServer:
                 self.venv.export2onnx(os.path.join(self.workspace, 'env.onnx'), verbose=False)
             except Exception as e:
                 pass
-                #logger.info('Fail to export venv to ONNX. -> {}'.format(e))
+                logger.info(f"Can't to export venv to ONNX. -> {e}")
         status_message = ray.get(self.venv_data_buffer.get_status.remote())
 
         return self.venv, train_log, status_message, best_model_workspace
@@ -448,7 +450,7 @@ class ReviveServer:
             try:
                 self.policy.export2onnx(os.path.join(self.workspace, 'policy.onnx'), verbose=False)
             except Exception as e:
-                logger.info('Fail to export venv to ONNX. -> {}'.format(e))
+                logger.info(f"Can't to export venv to ONNX. -> {e}")
 
         status_message = ray.get(self.policy_data_buffer.get_status.remote())
 

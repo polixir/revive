@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -49,6 +49,7 @@ def catch_error(func):
         try:
             return func(self, *args, **kwargs)
         except Exception as e:
+            raise e
             error_message = traceback.format_exc()
             logger.warning('Detect error:{}, Error Message: {}'.format(e,error_message))
             ray.get(self._data_buffer.update_status.remote(self._traj_id, 'error', error_message))
@@ -349,7 +350,7 @@ class PolicyOperator(TrainingOperator):
         self._data_buffer.inc_trial.remote()
 
         # get id
-        self._ip = ray.services.get_node_ip_address()
+        self._ip = ray._private.services.get_node_ip_address()
         
         logger.add(os.path.join(os.path.abspath(self._workspace),"revive.log"))
         
@@ -361,7 +362,7 @@ class PolicyOperator(TrainingOperator):
             logger.info("{} is running".format(tag))
             self._traj_id = int(tag.split('_')[0])
             experiment_dir = os.path.join(self._workspace, 'policy_tune')
-            for traj_name in filter(lambda x: "TorchTrainable" in x, os.listdir(experiment_dir)):
+            for traj_name in filter(lambda x: "ReviveLog" in x, os.listdir(experiment_dir)):
                 if len(traj_name.split('_')[1]) == 5: # create by random search or grid search
                     id_index = 3
                 else:
@@ -676,7 +677,7 @@ class PolicyOperator(TrainingOperator):
 
         return generated_data
 
-    def train_epoch(self, iterator, info):
+    def train_epoch(self, iterator, info, **kwargs):
         self._epoch_cnt += 1
 
         if hasattr(self, "model"):
@@ -733,6 +734,10 @@ class PolicyOperator(TrainingOperator):
 
     @catch_error
     def validate(self, val_iterator, info):
+        if info is None:
+            info = dict()
+            pass
+        
         # switch to evaluate mode
         if hasattr(self, "model"):
             self.model.eval()

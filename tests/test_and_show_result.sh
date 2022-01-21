@@ -1,0 +1,1 @@
+nohup bash -u tests/test.sh&> tests/test_result.out&

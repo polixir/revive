@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -242,9 +242,9 @@ class DistributionWrapper(nn.Module):
                 mu, logstd = torch.chunk(x, 2, dim=-1)
             else:
                 mu, logstd = x, self.logstd
-            # mu = torch.tanh(x)
             if payload is not None:
-                mu = mu + payload
+                mu = mu + safe_atanh(payload)
+            mu = torch.tanh(mu)
             std = adapt_std if adapt_std is not None else torch.exp(soft_clamp(logstd, self.min_logstd, self.max_logstd))
             return DiagnalNormal(mu, std)
         elif self.distribution_type == 'gmm':
@@ -257,16 +257,16 @@ class DistributionWrapper(nn.Module):
             else:
                 logits, mus = torch.split(x, [self.params['mixture'], self.params['mixture'] * self.params['dim']], dim=-1)
                 logstds = self.logstd
-            # mus = torch.tanh(mus)
             if payload is not None:
-                mus = mus + payload.unsqueeze(dim=-2)
+                mus = mus + safe_atanh(payload.unsqueeze(dim=-2))
+            mus = torch.tanh(mus)
             stds = adapt_std if adapt_std is not None else torch.exp(soft_clamp(logstds, self.min_logstd, self.max_logstd))
             return GaussianMixture(mus, stds, logits)
         elif self.distribution_type == 'onehot':
             return Onehot(x)
         elif self.distribution_type == 'discrete_logistic':
             mu, logstd = torch.chunk(x, 2, dim=-1)
-            logstd = torch.clamp_min(logstd, -7)
+            logstd = torch.clamp(logstd, -7, 1)
             return DiscreteLogistic(mu, torch.exp(logstd), num=self.num)
         elif self.distribution_type == 'mix':
             xs = torch.split(x, self.output_sizes, dim=-1)
@@ -424,8 +424,8 @@ class RecurrentTransition(RecurrentPolicy):
             dist = dist.shift(state[..., :self.obs_dim])
         return dist
 
-# ----------------------------- Discriminators ------------------------------ #
-class FeedForwardDiscriminator(torch.nn.Module):
+
+class FeedForwardMatcher(torch.nn.Module):
     def __init__(self, 
                  in_features : int, 
                  hidden_features : int, 
@@ -452,7 +452,7 @@ class FeedForwardDiscriminator(torch.nn.Module):
         x = torch.cat(inputs, dim=-1)
         return self.backbone(x)
 
-class RecurrentDiscriminator(torch.nn.Module):
+class RecurrentMatcher(torch.nn.Module):
     def __init__(self, 
                  in_features : int, 
                  hidden_features : int, 
@@ -472,7 +472,7 @@ class RecurrentDiscriminator(torch.nn.Module):
         rnn_output = self.rnn(x)[0]
         return self.output_layer(rnn_output)
 
-class HierarchicalDiscriminator(torch.nn.Module):
+class HierarchicalMatcher(torch.nn.Module):
     def __init__(self, 
                  in_features : list, 
                  hidden_features : int, 

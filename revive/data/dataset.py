@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -15,6 +15,7 @@
 import importlib
 import json
 import os
+import shutil
 import sys
 import warnings
 from copy import deepcopy
@@ -32,7 +33,7 @@ from revive.computation.funs_parser import parser
 from revive.computation.graph import *
 from revive.data.batch import Batch
 from revive.data.processor import DataProcessor
-from revive.utils.common_utils import find_later, load_data, plot_traj
+from revive.utils.common_utils import find_later, load_data, plot_traj, import_model_from_file
 
 DATADIR = os.path.abspath(os.path.join(os.path.dirname(revive.__file__), '../data/'))
 
@@ -47,9 +48,11 @@ class OfflineDataset(torch.utils.data.Dataset):
 
     def __init__(self, data_file : str,
                        config_file : str,
+                       ignore_check : bool = False,
                        horizon : int = None):
         self.data_file = data_file
         self.config_file = config_file
+        self.ignore_check = ignore_check
 
         self._load_config(self.config_file)
         self._load_data(self.data_file)
@@ -103,7 +106,7 @@ class OfflineDataset(torch.utils.data.Dataset):
                 f'Shape mismatch between `{curr_name}` (shape {self.data[curr_name].shape}) and `{next_name}` (shape {self.data[next_name].shape}). ' + \
                 f'If it is you who puts `{next_name}` in the data file, please check the way you generate it. ' + \
                 f'Otherwise, it is probably you have register a function to compute `{next_name}` but it output a wrong shape, please check the function!'
-        
+
         '''2. check if the functions are correctly defined'''
         for node_name in self.graph.keys():
             node = self.graph.get_node(node_name)
@@ -159,7 +162,48 @@ class OfflineDataset(torch.utils.data.Dataset):
                     f'Testing function for `{node_name}`. Expect function output type {type(should_output_data)}, got {type(output_data)} instead!'
                 assert output_data.dtype == should_output_data.dtype, \
                     f'Testing function for `{node_name}`. Expect function output dtype {should_output_data.dtype}, got {output_data.dtype} instead!'
-                    
+
+                # test value
+                input_data = {name : self.data[name] for name in node.input_names}
+                should_output_data = self.data[node.name]
+                
+                if node.node_function_type == 'torch':
+                    input_data = {k : torch.tensor(v) for k, v in input_data.items()}
+
+                output_data = node.node_function(input_data)
+
+                if node.node_function_type == 'torch':
+                    output_data = output_data.numpy()
+                
+                error = np.abs(output_data - should_output_data)
+
+                if np.max(error) > 1e-8:
+                    message = f'Test values for function "{node.name}", find max mismatch {np.max(error, axis=0)}. Please check the function.'
+                    if self.ignore_check or np.max(error) < 1e-4:
+                        logger.warning(message)
+                    else:
+                        message += '\nIf you are sure that the function is right and the value error is acceptable, configure "ignore_check=True" in the config.json to skip.'
+                        message += '\nIf you are using the "train.py" script. You can add the "--ignore_check 1" to skip. E.g. python train.py --ignore_check 1'
+                        logger.error(message)
+                        raise ValueError(message)                    
+
+        '''3. check if the transition variables match'''
+        for curr_name, next_name in self.graph.transition_map.items():
+            curr_data = []
+            next_data = []
+            for start, end in zip(self._start_indexes, self._end_indexes):
+                curr_data.append(self.data[curr_name][start+1:end])
+                next_data.append(self.data[next_name][start:end-1])
+            if not np.allclose(np.concatenate(curr_data), np.concatenate(next_data), 1e-4):
+                error = np.abs(np.concatenate(curr_data) - np.concatenate(next_data))
+                message = f'Test transition values for {curr_name} and {next_name}, find max mismatch {np.max(error, axis=0)}. ' + \
+                    f'If {next_name} is provided by you, please check the data file. If you provide {next_name} as a function, please check the function.'
+                if self.ignore_check:
+                    logger.warning(message)
+                else:
+                    logger.error(message)
+                    raise ValueError(message)
+
     def _load_data(self, data_file : str):
         '''
             load data from the data file and conduct following processes:
@@ -332,13 +376,16 @@ class OfflineDataset(torch.utils.data.Dataset):
         config = {}
         order = {}
         fit = {}
+        
 
         for config_key in keys:
             raw_columns[config_key], config[config_key], order[config_key], fit[config_key] = self._load_config_for_single_node(data_config, config_key)
 
         # parse graph
         graph_dict = raw_config['metadata'].get('graph', None)
-        graph = DesicionGraph(graph_dict, raw_columns, fit)
+        metric_nodes = raw_config['metadata'].get('metric_nodes', None)
+
+        graph = DesicionGraph(graph_dict, raw_columns, fit, metric_nodes)
 
         # copy the raw columns for transition variables to allow them as input to other nodes
         for curr_name, next_name in graph.transition_map.items():
@@ -363,10 +410,9 @@ class OfflineDataset(torch.utils.data.Dataset):
                             warnings.warn('Type hint is not provided, assume it is an numpy function!')
                             return 'numpy'
             raise ValueError(f'Cannot find function {function_name} in {file_name}.py, please check your yaml!')
-
+        
         later = find_later(self.config_file, 'data')
         head = '.'.join(later[:-1])
-
         # register expert functions to the graph
         if expert_functions is not None:
             for node_name, function_description in expert_functions.items():
@@ -377,10 +423,18 @@ class OfflineDataset(torch.utils.data.Dataset):
                     file_path = os.path.join(os.path.dirname(self.config_file), file_name + '.py')
                     function_type = get_function_type(file_path, function_name)
                     parse_file_path = file_path[:-3]+"_parsed.py"
-                    parser(file_path,parse_file_path,self.config_file)
+                    if not parser(file_path,parse_file_path,self.config_file):
+                        parse_file_path = file_path
                     function_type = get_function_type(parse_file_path, function_name)
-                    source_file = importlib.import_module(f'{head}.{file_name+"_parsed"}')
-                    sys.path.append(os.path.dirname(parse_file_path))
+                    file_name = os.path.split(os.path.splitext(parse_file_path)[0])[-1]
+                    # TODO: Update the import mode, use runtime_env(ray==1.9)
+                    #try: 
+                    #    shutil.copyfile(parse_file_path, os.path.join("./data/",file_name+".py"))
+                    #    parse_file_path = os.path.join("./data/",file_name+".py")
+                    #except:
+                    #    pass
+                    sys.path.insert(0, os.path.dirname(parse_file_path))
+                    source_file = importlib.import_module(f'{file_name}')
                     func = eval(f'source_file.{function_name}')
                     graph.get_node(node_name).register_node_function(func, function_type)
                     logger.info(f'register node function ({function_type} version) for {node_name}')

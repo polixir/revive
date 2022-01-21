@@ -1,5 +1,5 @@
 '''
-Copyright 2021 Polixir Technologies Co., Ltd.
+Copyright 2021-2022 Polixir Technologies Co., Ltd.
 
 This file is the fast launch scipts for use revive.
 '''

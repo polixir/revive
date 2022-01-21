@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -243,7 +243,7 @@ def parser(input_file : str,
         if code.startswith("import torch"):
             logger.info(f'Not parser function in {input_file}')
             copyfile(input_file, output_file)
-            return 
+            return False
         
     logger.info(f'Parser function in {input_file}')
                               
@@ -276,3 +276,5 @@ def parser(input_file : str,
             
     with open(output_file, 'w') as f:
         f.writelines(output_codes)
+
+    return True

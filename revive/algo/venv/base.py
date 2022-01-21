@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -49,6 +49,7 @@ def catch_error(func):
         try:
             return func(self, *args, **kwargs)
         except Exception as e:
+            raise e
             error_message = traceback.format_exc()
             logger.warning('Detect error:{}, Error Message: {}'.format(e,error_message))
             ray.get(self._data_buffer.update_status.remote(self._traj_id, 'error', error_message))
@@ -311,11 +312,13 @@ class VenvOperator(TrainingOperator):
         self._filename = os.path.join(self._workspace, "train_venv.json")
         self._data_buffer.set_total_trials.remote(config.get("total_num_of_trials", 1))
         self._data_buffer.inc_trial.remote()
-        self._least_metric_train = [np.inf] * len(self._graph.learnable_node_names)
-        self._least_metric_val = [np.inf] * len(self._graph.learnable_node_names)
+        self._least_metric_train = [np.inf] * len(self._graph.metric_nodes)
+        self._least_metric_val = [np.inf] * len(self._graph.metric_nodes)
+        self.least_val_metric = np.inf
+        self.least_train_metric = np.inf
 
         # get id
-        self._ip = ray.services.get_node_ip_address()
+        self._ip = ray._private.services.get_node_ip_address()
         
         logger.add(os.path.join(os.path.abspath(self._workspace),"revive.log"))
         
@@ -328,7 +331,7 @@ class VenvOperator(TrainingOperator):
             self._traj_id = int(tag.split('_')[0])
             experiment_dir = os.path.join(self._workspace, 'venv_tune')
             traj_name_list = sorted(os.listdir(experiment_dir),key=lambda x:x[-19:], reverse=True)
-            for traj_name in filter(lambda x: "TorchTrainable" in x, traj_name_list):
+            for traj_name in filter(lambda x: "ReviveLog" in x, traj_name_list):
                 if len(traj_name.split('_')[1]) == 5: # create by random search or grid search
                     id_index = 3
                 else:
@@ -339,7 +342,6 @@ class VenvOperator(TrainingOperator):
         else:
             self._traj_id = 1
             self._traj_dir = os.path.join(self._workspace, 'venv_train')
-        
 
         # setup constant
         self._stop_flag = False
@@ -352,6 +354,11 @@ class VenvOperator(TrainingOperator):
         self._wdist_ready_val = False
         self._wdist_ready = False
         self._device = 'cuda' if self._use_gpu else 'cpu' # fix problem introduced in ray 1.1
+
+        if "shooting_" in self.config['venv_metric']:
+            self.config['venv_metric'] = self.config['venv_metric'].replace("shooting_","rollout_")
+        if self.config['venv_metric'] in ["mae","mse","nll"]:
+            self.config['venv_metric'] = "rollout_" + self.config['venv_metric']
         
         # prepare for training
         self.graph_train = deepcopy(self._graph)
@@ -364,7 +371,7 @@ class VenvOperator(TrainingOperator):
 
         self.nodes_map = {}
         self.total_dim = 0
-        for node_name in self._graph.learnable_node_names:
+        for node_name in self._graph.metric_nodes:
             self.total_dim += self.config['total_dims'][node_name]['input']
 
             node_dims = []
@@ -390,6 +397,16 @@ class VenvOperator(TrainingOperator):
 
         self._save_models(self._traj_dir)
         self._update_metric()
+
+    def nan_in_grad(self, ):
+        if hasattr(self, "nums_nan_in_grad"):
+            self.nums_nan_in_grad += 1
+        else:
+            self.nums_nan_in_grad = 1
+
+        if self.nums_nan_in_grad > 100:
+            self._stop_flag = True
+            logger.warning(f'Find too many nan in loss. Early stop.')
 
     def _register_models_to_graph(self, graph : DesicionGraph, models : List[torch.nn.Module]):
         index = 0
@@ -572,20 +589,18 @@ class VenvOperator(TrainingOperator):
             else:
                 new_data[node_name] = graph.compute_node(node_name, new_data)
                 continue
-
-            node_mse = ((new_data[node_name] - expert_data[node_name]) ** 2).sum(dim=-1).mean()
-            total_mse += node_mse.item()
-            info[f"{self.NAME}/{node_name}_mse_{scope}"] = node_mse.item()
-
-        info[f"{self.NAME}/average_mse_{scope}"] = total_mse / self.total_dim
+            if node_name in graph.metric_nodes:
+                node_mse = ((new_data[node_name] - expert_data[node_name]) ** 2).sum(dim=-1).mean()
+                total_mse += node_mse.item()
+                info[f"{self.NAME}/{node_name}_one_step_mse_{scope}"] = node_mse.item()
+        info[f"{self.NAME}/average_one_step_mse_{scope}"] = total_mse / self.total_dim
 
         mse_error = 0
-        for node_name in graph.learnable_node_names:
-            policy_shooting_mse = ((expert_data[node_name] - generated_data[node_name]) ** 2).sum(dim=-1).mean()
-            mse_error += policy_shooting_mse.item()
-            info[f"{self.NAME}/{node_name}_shooting_mse_{scope}"] = policy_shooting_mse.item()
-
-        info[f"{self.NAME}/average_shooting_mse_{scope}"] = mse_error / self.total_dim
+        for node_name in graph.metric_nodes:
+            policy_rollout_mse = ((expert_data[node_name] - generated_data[node_name]) ** 2).sum(dim=-1).mean()
+            mse_error += policy_rollout_mse.item()
+            info[f"{self.NAME}/{node_name}_rollout_mse_{scope}"] = policy_rollout_mse.item()
+        info[f"{self.NAME}/average_rollout_mse_{scope}"] = mse_error / self.total_dim
 
         return info
 
@@ -606,15 +621,34 @@ class VenvOperator(TrainingOperator):
 
         graph.reset()
 
+        new_data = Batch({name : expert_data[name] for name in graph.leaf})
         total_nll = 0
         for node_name in graph.keys():
-            if graph.get_node(node_name).node_type == 'network':
+            if node_name in graph.learnable_node_names and node_name in graph.metric_nodes:
+                node_dist = graph.compute_node(node_name, new_data)
+                new_data[node_name] = node_dist.mode
+            else:
+                new_data[node_name] = expert_data[node_name]
+                continue
+            node_nll = - node_dist.log_prob(expert_data[node_name]).mean()
+            total_nll += node_nll.item()
+            info[f"{self.NAME}/{node_name}_one_step_nll_{scope}"] = node_nll.item()
+
+        
+        info[f"{self.NAME}/average_one_step_nll_{scope}"] = total_nll / self.total_dim
+
+        total_nll = 0
+        for node_name in graph.metric_nodes:
+            if node_name in graph.learnable_node_names:
                 node_dist = graph.compute_node(node_name, expert_data)
                 policy_nll = - node_dist.log_prob(expert_data[node_name]).mean()
                 total_nll += policy_nll.item()
-                info[f"{self.NAME}/{node_name}_nll_{scope}"] = policy_nll.item()
+                info[f"{self.NAME}/{node_name}_rollout_nll_{scope}"] = policy_nll.item()
+            else:
+                total_nll += 0
+                info[f"{self.NAME}/{node_name}_rollout_nll_{scope}"] = 0
 
-        info[f"{self.NAME}/average_nll_{scope}"] = total_nll / self.total_dim
+        info[f"{self.NAME}/average_rollout_nll_{scope}"] = total_nll / self.total_dim
 
         return info
         
@@ -644,21 +678,24 @@ class VenvOperator(TrainingOperator):
             else:
                 new_data[node_name] = graph.compute_node(node_name, new_data)
                 continue
+            if node_name in graph.metric_nodes:
+                node_mae = (new_data[node_name] - expert_data[node_name]).abs().sum(dim=-1).mean()
+                total_mae += node_mae.item()
+                info[f"{self.NAME}/{node_name}_one_step_mae_{scope}"] = node_mae.item()
 
-            node_mae = (new_data[node_name] - expert_data[node_name]).abs().sum(dim=-1).mean()
-            total_mae += node_mae.item()
-            info[f"{self.NAME}/{node_name}_mae_{scope}"] = node_mae.item()
-
-        info[f"{self.NAME}/average_mae_{scope}"] = total_mae / self.total_dim
+        info[f"{self.NAME}/average_one_step_mae_{scope}"] = total_mae / self.total_dim
 
         mae_error = 0
         for node_name in graph.keys():
-            if not graph.get_node(node_name).node_type == 'network': continue
-            policy_shooting_error = torch.abs(expert_data[node_name] - generated_data[node_name]).sum(dim=-1).mean()
-            mae_error += policy_shooting_error.item()
-            info[f"{self.NAME}/{node_name}_shooting_mae_{scope}"] = policy_shooting_error.item()
+            if node_name in graph.metric_nodes:
+                policy_shooting_error = torch.abs(expert_data[node_name] - generated_data[node_name]).sum(dim=-1).mean()
+                mae_error += policy_shooting_error.item()
+                info[f"{self.NAME}/{node_name}_rollout_mae_{scope}"] = policy_shooting_error.item()
 
-        info[f"{self.NAME}/average_shooting_mae_{scope}"] = mae_error / self.total_dim
+                # TODO: plot rollout error
+                # rollout_error = torch.abs(expert_data[node_name] - generated_data[node_name]).reshape(expert_data.shape[0],-1).mean(dim=-1)
+
+        info[f"{self.NAME}/average_rollout_mae_{scope}"] = mae_error / self.total_dim
 
         return info
 
@@ -680,21 +717,25 @@ class VenvOperator(TrainingOperator):
         graph.reset()
 
         wdist_error = []
-        for node_name in graph.learnable_node_names:
-            if not graph.get_node(node_name).node_type == 'network': continue
-            node_dim = expert_data[node_name].shape[-1]
-            wdist = [stats.wasserstein_distance(expert_data[node_name].reshape(-1, expert_data[node_name].shape[-1])[..., dim].cpu().numpy(),
-                                                generated_data[node_name].reshape(-1, generated_data[node_name].shape[-1])[..., dim].cpu().numpy())
-                            for dim in range(node_dim)]
-            wdist = np.sum(wdist)
-            info[f"{self.NAME}/{node_name}_wdist_{scope}"] = wdist
-            
-            wdist_error.append(wdist)
+        for node_name in graph.keys():
+            if node_name in graph.metric_nodes:
+                node_dim = expert_data[node_name].shape[-1]
+                wdist = [stats.wasserstein_distance(expert_data[node_name].reshape(-1, expert_data[node_name].shape[-1])[..., dim].cpu().numpy(),
+                                                    generated_data[node_name].reshape(-1, generated_data[node_name].shape[-1])[..., dim].cpu().numpy())
+                                for dim in range(node_dim)]
+                wdist = np.sum(wdist)
+                info[f"{self.NAME}/{node_name}_wdist_{scope}"] = wdist
+                
+                wdist_error.append(wdist)
 
         info[f"{self.NAME}/average_wdist_{scope}"] = np.sum(wdist_error) / self.total_dim
         return info
 
-    def train_epoch(self, iterator, info):
+    def train_epoch(self, iterator, info, **kwargs):
+        if info is None:
+            info = dict()
+            pass
+        
         r"""Define the training process for an epoch."""
         self._epoch_cnt += 1
 
@@ -737,6 +778,10 @@ class VenvOperator(TrainingOperator):
 
     @catch_error
     def validate(self, val_iterator, info):
+        if info is None:
+            info = dict()
+            pass
+        
         r"""Define the validate process after train one epoch."""
         if hasattr(self, "model"):
             self.model.eval()
@@ -778,25 +823,49 @@ class VenvOperator(TrainingOperator):
             info.update(self._env_test('val'))
 
         if self._epoch_cnt >= self.config['save_start_epoch']:
-            need_update = False
-            for i, node_name in enumerate(self.graph_train.learnable_node_names):
+            need_update = []
+            for i, node_name in enumerate(self.graph_train.metric_nodes):
+                i = self.graph_train.metric_nodes.index(node_name)
                 if info[f"{self.NAME}/{node_name}_{self.config['venv_metric']}_trainEnv_on_valData"] < self._least_metric_train[i]:
                     self._least_metric_train[i] = info[f"{self.NAME}/{node_name}_{self.config['venv_metric']}_trainEnv_on_valData"]
                     self.best_graph_train.nodes[node_name] = self.graph_to_save_train.get_node(node_name)
-                    need_update = True
-            for i, node_name in enumerate(self.graph_val.learnable_node_names):
+                    need_update.append(True)
+                else:
+                    need_update.append(False)
+
+            for i, node_name in enumerate(self.graph_val.metric_nodes):
+                i = self.graph_val.metric_nodes.index(node_name)
                 if info[f"{self.NAME}/{node_name}_{self.config['venv_metric']}_valEnv_on_trainData"] < self._least_metric_val[i]:
                     self._least_metric_val[i] = info[f"{self.NAME}/{node_name}_{self.config['venv_metric']}_valEnv_on_trainData"]
                     self.best_graph_val.nodes[node_name] = self.graph_to_save_val.get_node(node_name)
-                    need_update = True
-            if need_update:
-                self._save_models(self._traj_dir)
-                self._update_metric()
+                    need_update.append(True)
+                else:
+                    need_update.append(False)
+
+            if self.config["save_by_node"]:
+                info["least_metric"] = np.sum(self._least_metric_train) / self.total_dim
+                self.least_metric = info["least_metric"]
+                if True in need_update:
+                    self._save_models(self._traj_dir)
+                    self._update_metric()
 
         info["stop_flag"] = self._stop_flag
         info['now_metric'] = info[f'{self.metric_name}_trainEnv_on_valData']
-        info["least_metric"] = np.sum(self._least_metric_train) / self.total_dim
-        self.least_metric = info["least_metric"]
+        
+        if not self.config["save_by_node"]:
+            now_val_metric = info[f'{self.metric_name}_valEnv_on_trainData']
+            if self._epoch_cnt >= self.config['save_start_epoch']:
+                #if (info["now_metric"] <= self.least_train_metric or now_val_metric <= self.least_val_metric):
+                if info["now_metric"] <= self.least_train_metric:
+                    self._save_models(self._traj_dir)
+                    self._update_metric()
+                    if info["now_metric"] <= self.least_train_metric:
+                        self.least_train_metric = info["now_metric"]
+                    if now_val_metric <= self.least_val_metric:
+                        self.least_val_metric = now_val_metric
+
+            info["least_metric"] = self.least_train_metric
+            self.least_metric = self.least_train_metric
 
         for k in list(info.keys()):
             if self.NAME in k:
@@ -804,23 +873,26 @@ class VenvOperator(TrainingOperator):
                 info['VAL_' + k] = v
 
         '''plot histogram when training is finished'''
-        if self._stop_flag or (need_update and self._epoch_cnt % 100 == 1):
+        if self._stop_flag or self._epoch_cnt % 100 == 1:
             histogram_path = os.path.join(self._traj_dir, 'histogram')
             if not os.path.exists(histogram_path):
                 os.makedirs(histogram_path)
 
-            save_histogram(histogram_path, self.best_graph_train, self._train_loader_val, device=self._device, scope='train')
-            save_histogram(histogram_path, self.best_graph_val, self._val_loader_val, device=self._device, scope='val')
+            try:
+                save_histogram(histogram_path, self.best_graph_train, self._train_loader_val, device=self._device, scope='train')
+                save_histogram(histogram_path, self.best_graph_val, self._val_loader_val, device=self._device, scope='val')
 
-            # save rolllout action image
-            rollout_save_path = os.path.join(self._traj_dir, 'rollout_images')
-            save_rollout_action(rollout_save_path, self.best_graph_train, self.device, self.train_dataset, self.nodes_map)
+                # save rolllout action image
+                rollout_save_path = os.path.join(self._traj_dir, 'rollout_images')
+                save_rollout_action(rollout_save_path, self.best_graph_train, self.device, self.train_dataset, self.nodes_map)
+            except Exception as e:
+                logger.warning(e)
 
         if self._epoch_cnt == 1:
             try:
                 info = self._load_checkpoint(info)
             except:
-                logger.info("Load checkpoint fail!")
+                logger.info("Don't Load checkpoint!")
             
             if hasattr(self, "_traj_dir_bak") and os.path.exists(self._traj_dir_bak):
                 shutil.rmtree(self._traj_dir_bak)
@@ -853,7 +925,7 @@ class VenvOperator(TrainingOperator):
                 params = json.load(f)
 
             experiment_dir = os.path.dirname(self._traj_dir)
-            dir_name_list = [dir_name for dir_name in os.listdir(experiment_dir) if dir_name.startswith("TorchTrainable")]
+            dir_name_list = [dir_name for dir_name in os.listdir(experiment_dir) if dir_name.startswith("ReviveLog")]
             dir_name_list = sorted(dir_name_list,key=lambda x:x[-19:], reverse=False)
 
             for dir_name in dir_name_list:

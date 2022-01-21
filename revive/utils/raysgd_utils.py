@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -74,6 +74,10 @@ class ReviveTorchTrainer(TorchTrainer):
         #  start_workers should take into account available resources when
         #  determining how many workers to create.
         self.worker_group.start_workers(num_workers)
+        
+        # NOTE: This skip the resource check.
+        # Temporary solution, should be done by another way.
+        return True
 
     @classmethod
     def as_trainable(cls, *args, **kwargs):

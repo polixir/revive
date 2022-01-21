@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -48,6 +48,14 @@ DEFAULT_CONFIG = [
         'type' : str,
         'default' : 'outside_traj',
         'tune': True,
+    },
+    {
+        'name' : 'ignore_check',
+        'abbreviation' : 'igc',
+        'description' : 'Flag to ignore data related check, force training.',
+        'type' : bool,
+        'default' : False,
+        'tune': False,
     },
     {
         'name' : 'data_workers',
@@ -130,7 +138,7 @@ DEFAULT_CONFIG = [
     },  
     {
         'name' : 'venv_metric',
-        'description' : 'Metric used to evaluate the trained venv, choose from `nll`, `mae`, `mse`.',
+        'description' : 'Metric used to evaluate the trained venv, choose from `nll`, `mae`, `mse`, `wdist`.',
         'type' : str,
         'default' : 'mae',
         'tune': True,
@@ -185,7 +193,14 @@ DEFAULT_CONFIG = [
         'type' : bool,
         'default' : True,
         'tune': False,
-    },  
+    }, 
+    {
+        'name' : 'save_by_node',
+        'description' : 'Whether to save the mechanism of the trail model based on the performance of a single node.',
+        'type' : bool,
+        'default' : False,
+        'tune': False,
+    },   
     {
         'name' : 'histogram_log_frequency',
         'abbreviation' : 'hlf',
@@ -198,7 +213,7 @@ DEFAULT_CONFIG = [
     # policy related config
     {
         "name": "policy_gpus_per_worker",
-        'abbreviation' : 'gpgw',
+        'abbreviation' : 'pgpw',
         "description": "Number of gpus per worker in venv training, small than 1 means launch multiple workers on the same gpu.",
         "type": float,
         "default": 1.0,

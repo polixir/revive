@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -153,8 +153,8 @@ def download_helper(url : str, filename : str):
         else:
             raise e
 
-def import_model_from_file(file_path):
-    spec = importlib.util.spec_from_file_location("module.name", file_path)
+def import_model_from_file(file_path, module_name = "module.name"):
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
     foo = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(foo)
     
@@ -165,7 +165,8 @@ def get_reward_fn(reward_file_path,config_file):
         logger.info(f'import reward function from {reward_file_path}!')
         # parse function
         reward_file_path_parsed = reward_file_path[:-3]+"_parsed.py"
-        parser(reward_file_path,reward_file_path_parsed,config_file)
+        if not parser(reward_file_path,reward_file_path_parsed,config_file):
+            reward_file_path_parsed = reward_file_path
         source_file = import_model_from_file(reward_file_path_parsed)
         try:
             reward_func = source_file.reward
@@ -336,6 +337,17 @@ def generate_rollout(expert_data : Batch,
             else:
                 action = graph.compute_node(node_name, current_batch)
                 current_batch[node_name] = action
+
+        # check the generated current_batch
+        # NOTE: this will make the rollout a bit slower.
+        #       Remove it if you are sure no explosion will happend.
+        for k, v in current_batch.items():
+            has_inf = torch.any(torch.isinf(v))
+            has_nan = torch.any(torch.isnan(v))
+            if has_inf or has_nan:
+                logger.warning(f'During rollout detect anomaly data: key {k}, has inf {has_inf}, has nan {has_nan}')
+                logger.warning(f'Should generated rollout with length {traj_length}, early stop for only length {i}')
+                break
 
         generated_data.append(current_batch)
 
@@ -535,6 +547,7 @@ def save_histogram(histogram_path : str, graph : DesicionGraph, data_loader : Da
             dimension_name = list(dimension.keys())[0]
             expert_dimension_data = expert_data[node_name][..., i].reshape((-1))
             generated_dimension_data = generated_data[node_name][..., i].reshape((-1))
+            assert expert_dimension_data.shape == generated_dimension_data.shape
 
             if dimension[dimension_name]['type'] == 'continuous':
                 bins = 100
@@ -581,7 +594,8 @@ def tb_data_parse(tensorboard_log_dir, keys: list = []):
     ea = event_accumulator.EventAccumulator(tensorboard_log_dir)
     ea.Reload()
     ea_keys = ea.scalars.Keys()
-    
+
+    ea_keys = [k[9:] if k.startswith('ray/tune/') else k for k in ea_keys]
     parse_data = lambda key: [(i.step,i.value) for i in ea.scalars.Items(key)] 
     
     if keys:
@@ -720,71 +734,71 @@ def data_to_dtreeviz(data: pd.DataFrame,
                      target_type: (List[str],str),
                      orientation: ('TD', 'LR') = "TD",
                      fancy: bool = False,
-                     depth_range_to_display: int = 3,
+                     max_depth: int = 3,
                      output: (str) = None):
     if isinstance(target_type, str) and len(target.columns) > 1:
         target_type = [target_type,] * len(target.columns)
     
-    vizs = {}
-    
-    for _target_type, target_name in zip(target_type,target.columns):
-        if _target_type == "Classifier" or _target_type == "C":
-            _target_type = "Classifier"
-            decisiontree = tree.DecisionTreeClassifier(max_depth=depth_range_to_display)
-        elif _target_type == "Regressor" or _target_type == "R":
-            _target_type = "Regressor" 
-            decisiontree = tree.DecisionTreeRegressor(max_depth=depth_range_to_display)
-        else:
-            raise NotImplementedError
-            
-        _target = target[[target_name,]]
-        decisiontree.fit(data,_target)
-        if _target_type == "Classifier":
-            _orientation = "TD"
-            _target = _target.values.reshape(-1)
-            class_names = list(set(list(_target)))
-        else:
-            _target = _target.values
-            class_names = None
-            _orientation = "LR"
-        viz = dtreeviz(decisiontree,
-                       data.values,
-                       _target,
-                       target_name=target_name,
-                       feature_names=data.columns,
-                       class_names=class_names,
-                       title = target_name + " " + _target_type + " Tree",
-                       orientation = _orientation,
-                       fancy=fancy,
-                       scale = 2)
+    _tmp_pdf_paths = []
 
-        vizs[target_name] = viz
-       
-    if output is None:
-        if len(vizs.keys()) == 1:
-            return viz
-        return vizs
-
-    assert output, f"output should be not None" 
     with TemporaryDirectory() as dirname:
-        _tmp_pdf_paths = []
-        for svg in vizs.values():
+        for _target_type, target_name in zip(target_type,target.columns):
+            if _target_type == "Classifier" or _target_type == "C":
+                _target_type = "Classifier"
+                decisiontree = tree.DecisionTreeClassifier(max_depth=max_depth)
+            elif _target_type == "Regressor" or _target_type == "R":
+                _target_type = "Regressor" 
+                decisiontree = tree.DecisionTreeRegressor(max_depth=max_depth,random_state=1)
+            else:
+                raise NotImplementedError
+                
+            _target = target[[target_name,]]
+            decisiontree.fit(data,_target)
+
+            if _target_type == "Classifier":
+                _orientation = "TD"
+                _target = _target.values.reshape(-1)
+                class_names = list(set(list(_target)))
+            else:
+                _target = _target.values
+                class_names = None
+                _orientation = "LR"
+
+            viz = dtreeviz(decisiontree,
+                        data.values,
+                        _target,
+                        target_name=target_name,
+                        feature_names=data.columns,
+                        class_names=class_names,
+                        title = target_name + " " + _target_type + " Tree",
+                        orientation = _orientation,
+                        fancy=fancy,
+                        scale = 2)
+
             _tmp_pdf_path = os.path.join(dirname, str(uuid1())+".pdf")
             _tmp_pdf_paths.append(_tmp_pdf_path)
-            svg2pdf(url=svg.save_svg(), 
-                             output_width=800, 
-                             output_height=1000, 
-                             write_to=_tmp_pdf_path)
-            
-        merger = PdfFileMerger()
+            svg2pdf(url=viz.save_svg(), 
+                    output_width=800, 
+                    output_height=1000, 
+                    write_to=_tmp_pdf_path)
 
-        for in_pdf in _tmp_pdf_paths:
-            with open(in_pdf,'rb') as pdf:
-                merger.append(PdfFileReader(pdf))
-        merger.write(output)
-                
-    return
+        
+        if output is None:
+            if len(vizs.keys()) == 1:
+                return viz
+            return vizs
 
+        assert output, f"output should be not None" 
+
+        if len(_tmp_pdf_paths)==len(target_type):
+            merger = PdfFileMerger()
+
+            for in_pdf in _tmp_pdf_paths:
+                with open(in_pdf,'rb') as pdf:
+                    merger.append(PdfFileReader(pdf))
+            merger.write(output)
+
+        return
 
 def net_to_tree(tree_save_path: str,
                 graph: DesicionGraph, 

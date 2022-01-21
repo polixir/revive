@@ -11,8 +11,10 @@ train_venv.json
 train_policy.json
 *.jpg
 *.pkl
+*.out
 ZOOpt
 data/*
+tests/data/*
 .aim/
 apex/
 BatchRL/

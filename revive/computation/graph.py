@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -261,17 +261,26 @@ class FunctionDecisionNode(DesicionNode):
             data_type = 'numpy'
         
         output = self.node_function(deprocessed_data)
-        if data_type == 'torch':
-            if torch.isinf(torch.mean(output)).item():
-                logger.error(f"Find inf in {self.name} node function output {output}")
-                
-            if torch.isnan(torch.mean(output)).item():
-                logger.error(f"Find nan in {self.name} node function output {output}")
-        
         if data_type == 'numpy':
+            if np.isinf(np.mean(output)).item():
+                logger.error(f"Find inf in {self.name} node function output {output}")
+                raise ValueError(f"Find inf in {self.name} node function output {output}")
+                
+            if np.isnan(np.mean(output)).item():
+                logger.error(f"Find nan in {self.name} node function output {output}")
+                raise ValueError(f"Find nan in {self.name} node function output {output}")
+
             output = self.processor.process_single(output, self.name)
             output = torch.as_tensor(output).to(torch_data) # numpy -> torch
         else:
+            if torch.isinf(torch.mean(output)).item():
+                logger.error(f"Find inf in {self.name} node function output {output}")
+                raise ValueError(f"Find inf in {self.name} node function output {output}")
+                
+            if torch.isnan(torch.mean(output)).item():
+                logger.error(f"Find nan in {self.name} node function output {output}")
+                raise ValueError(f"Find nan in {self.name} node function output {output}")
+
             output = self.processor.process_single_torch(output, self.name)
 
         return output
@@ -294,7 +303,8 @@ class DesicionGraph:
     def __init__(self, 
                  graph_dict : Dict[str, List[str]], 
                  descriptions : Dict[str, List[Dict[str, Dict[str, Any]]]],
-                 fit) -> None:
+                 fit,
+                 metric_nodes,) -> None:
         self.descriptions = descriptions
         self.graph_dict = self.sort_graph(graph_dict)
         self.fit = fit
@@ -306,11 +316,30 @@ class DesicionGraph:
         for node_name in self.graph_dict.keys():
             self.nodes[node_name] = None
 
+        if metric_nodes is None:
+            self.metric_nodes = list(self.nodes.keys())
+        else:
+            self.metric_nodes = []
+            for node in self.nodes.keys():
+                if node in metric_nodes:
+                    if node in self.leaf:
+                        logger.info(f"Node '{node}' is a leaf node, it should't be a metric node.")
+                        continue
+                    assert node in self.nodes.keys(), f"Metric node '{node}' is not in Graph, Please check yaml."
+                    self.metric_nodes.append(node)
+        assert len(self.metric_nodes) >= 1, f"At least one non-leaf node is required for metric."
+
     def register_node(self, node_name : str, node_class):
         r''' Register a node with given node class '''
         assert self.nodes[node_name] is None, f'Cannot register node `{node_name}`, the node is already registered as `{type(self.nodes[node_name])}`'
         input_names = self.graph_dict[node_name]
         self.nodes[node_name] = node_class(node_name, input_names, [self.descriptions[input_name] for input_name in input_names])
+
+        # TODO: UPDATE
+        if node_class.node_type == 'function':
+            if node_name in self.metric_nodes:
+                self.metric_nodes.remove(node_name)
+                assert len(self.metric_nodes) >= 1, f"At least one non-leaf node is required for metric."
 
     @property
     def learnable_node_names(self) -> List[str]:
@@ -346,7 +375,7 @@ class DesicionGraph:
     def get_relation_node_names(self) -> List[str]:
         ''' 
             get all the nodes that related to the learning (network) nodes.
-            NOTE: this is the default list if you have discriminators and value functions. 
+            NOTE: this is the default list if you have matcher and value functions. 
         '''
         node_names = []
         for node in self.nodes.values():

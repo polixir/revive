@@ -21,7 +21,7 @@ setup(
         'torch>=1.8',
         'pyro-ppl==1.6.0',
         'aioredis==1.3.1',
-        'ray==1.1',
+        'ray==1.8',
         'loguru',
         'tabulate',
         'tensorboardX',
@@ -29,6 +29,7 @@ setup(
         'scipy',
         'matplotlib',
         'tensorboard',
+        'gym',
         'tqdm',
         'pot',
         'pandas',
@@ -38,7 +39,7 @@ setup(
         'CairoSVG==2.5.2',
         'dtreeviz==1.3.2',
         'PyPDF2==1.26.0',
-        
+        'pyarmor==7.3.0',
     ],
     url="https://agit.ai/Polixir/revive"
 )

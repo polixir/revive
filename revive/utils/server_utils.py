@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -227,6 +227,8 @@ class Logger:
     def update(self, key, value):
         self.log[key] = value
 
+def trial_str_creator(trial):
+    return "{}_{}".format("ReviveLog", trial.trial_id)
 
 class TuneVenvTrain(object):
     def __init__(self, config, logger, command=None):       
@@ -249,7 +251,7 @@ class TuneVenvTrain(object):
         setup_seed(self.config["global_seed"])
         # Set tune stop
         tune_params["stop"] = SysStopper(workspace = self.config['workspace'])
-    
+        tune_params["trial_name_creator"] = trial_str_creator
         analysis = tune.run(torchTrainable, **tune_params)
         best_df = analysis.dataframe(metric="least_metric", mode="min")
         best_config = analysis.get_best_config(metric="least_metric", mode="min")
@@ -291,7 +293,7 @@ class TunePolicyTrain(object):
         setup_seed(self.config["global_seed"])
         # Set tune stop
         tune_params["stop"] = SysStopper(workspace = self.config['workspace'])
-        
+        tune_params["trial_name_creator"] = trial_str_creator
         analysis = tune.run(torchTrainable, **tune_params)
         best_df = analysis.dataframe(metric="reward_trainPolicy_on_valEnv", mode="max")
         best_config = analysis.get_best_config(metric="reward_trainPolicy_on_valEnv", mode="max")
