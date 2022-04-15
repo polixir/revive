@@ -21,7 +21,7 @@ setup(
         'torch>=1.8',
         'pyro-ppl==1.6.0',
         'aioredis==1.3.1',
-        'ray==1.8',
+        'ray[default]==1.8',
         'loguru',
         'tabulate',
         'tensorboardX',
@@ -33,13 +33,25 @@ setup(
         'tqdm',
         'pot',
         'pandas',
-        'zoopt>=0.4.1',
+        'zoopt==0.4.2',
         'h5py',
         'pytest',
         'CairoSVG==2.5.2',
         'dtreeviz==1.3.2',
         'PyPDF2==1.26.0',
         'pyarmor==7.3.0',
+        'prometheus_client==0.13.1',
     ],
     url="https://agit.ai/Polixir/revive"
 )
+
+config_folder = os.path.join(os.path.expanduser('~'),".revive")
+if not os.path.exists(config_folder):
+    os.makedirs(config_folder)
+    import yaml
+    from collections import OrderedDict
+    with open(os.path.join(config_folder,'config.yaml'), 'w', encoding='utf-8') as f:
+        lines = []
+        lines.append("username: xxxxxxxxx"+"\n")
+        lines.append("password: xxxxxxxxx"+"\n")
+        f.writelines(lines)

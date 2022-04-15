@@ -77,12 +77,14 @@ def load_h5(filename : str):
     f.close()
     return data
 
+def save_h5(filename : str, data : Dict[str, np.ndarray]):
+    with h5py.File(filename, 'w') as f:
+        for k, v in data.items():
+            f[k] = v
+
 def npz2h5(npz_filename : str, h5_filename : str):
     data = load_npz(npz_filename)
-    f = h5py.File(h5_filename, 'w')
-    for k, v in data.items():
-        f[k] = v
-    f.close()
+    save_h5(h5_filename, data)
 
 def h52npz(h5_filename : str, npz_filename : str):
     data = load_h5(h5_filename)
@@ -303,7 +305,8 @@ def generate_rollout(expert_data : Batch,
                      traj_length : int, 
                      sample_fn=lambda dist: dist.sample(), 
                      adapt_stds=None,
-                     clip : bool = False):
+                     clip : Union[bool, float] = False,
+                     use_target : bool = False):
     """
     Generate trajectories based on current policy.
     :param expert_data: samples from the dataset.
@@ -328,9 +331,14 @@ def generate_rollout(expert_data : Batch,
     for i in range(traj_length):
         for node_name, adapt_std in zip(list(graph.keys()), adapt_stds):
             if graph.get_node(node_name).node_type == 'network':
-                action_dist = graph.compute_node(node_name, current_batch, adapt_std=adapt_std)
+                action_dist = graph.compute_node(node_name, current_batch, adapt_std=adapt_std, use_target=use_target)
                 action = sample_fn(action_dist)
-                if clip: action = torch.clamp(action, -1, 1)
+                if isinstance(clip,bool) and clip: 
+                    action = torch.clamp(action, -1, 1)
+                elif isinstance(clip, float):
+                    action = torch.clamp(action, -clip, clip)
+                else:
+                    pass
                 current_batch[node_name] = action
                 action_log_prob = action_dist.log_prob(action).unsqueeze(dim=-1).detach() # TODO: do we need this detach?
                 current_batch[node_name + "_log_prob"] = action_log_prob
@@ -518,6 +526,13 @@ def find_later(path : str, keyword : str) -> List[str]:
         if keyword == word:
             break
     return list(reversed(later))
+
+def get_node_dim_from_dist_configs(dist_configs, node_name):
+    node_dim = 0
+    for dist_config in dist_configs[node_name]:
+        node_dim += dist_config["dim"]
+
+    return node_dim
 
 def save_histogram(histogram_path : str, graph : DesicionGraph, data_loader : DataLoader, device : str, scope : str):
     '''save the histogram'''

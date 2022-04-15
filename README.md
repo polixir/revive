@@ -23,7 +23,7 @@ The tutorials and API documentation are hosted on https://revive.cn/help/polixir
 ### Requirements
 
 -   Linux x86\_64
--   [Python](https://python.org/): v3.6.0+ / v3.7.0+ / v3.8.0+
+-   [Python](https://python.org/): v3.7.0+ / v3.8.0+ / v3.9.0+
 -   [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit) (If NVIDIA
     CUDA GPU device is available.)
 
@@ -39,42 +39,25 @@ You can also view and download all versions of the code package through the rele
 
 **Releases Page :** https://agit.ai/Polixir/revive/releases
 
-###  Apply for License
+###  Register an Account
 
-The revive library was developed by polixir, we have encrypted and protected a small number of algorithm modules in 
-revive that have their own intellectual property rights, you can apply for a license to use the complete algorithm 
-package functionality.
+The REVIVE SDK library is developed by Polixir. We encrypt and protect a few algorithm modules, which have their own intellectual property rights, and you can register an account to use the features of the full algorithm package.
 
-The process of applying for a License can be divided into the following
-two steps:
+The process  can be divided into the following two steps:
 
-**Step 1**. Get machine information using the installed REVIVE SDK.
-After running the following command, a file named `machine_info.json`
-will be generated in the `licenses` folder.
-
-``` {.sh}
-$ cd licenses
-$ python get_machine_info.py
-```
-
-**Step 2**. Apply for a license for the machine by uploading the
-file(`machine_info.json`) obtained in the previous step on the REVIVE
-Website.
+**Step 1**. Visit the REVIVE Website to register an account.
 
 **REVIVE Website :** <https://www.revive.cn>
 
-###  Use the License
+**Step 2**. Configure registered account information.
 
-After applying for a license, you will get a file with the file name `license.lic`.
-Upload your license file to the machine where revive is installed, and set the
-environment variable `PYARMOR_LICENSE`.
+1.  Open the `config.yaml` file in your home directory (for example,`/home/your-user-name/.revive/.config.yaml`) in a text editor. After installing REVIVE SDK, the config.yaml file will be generated automatically.
+2.  Fill in the registered username and password.
 
-1.  Open the `.bashrc` file in your home directory (for example,`/home/your-user-name/.bashrc`) in a text editor.
-2.  Add `export PYARMOR_LICENSE="/license_save_dir/license.lic"` to thelast line of the file, where `/license_save_dir/license.lic` is is
-    the path to the file where the license is stored.
-3.  Save the `.bashrc` file.
-4.  Use the command `source /home/your-user-name/.bashrc` to reload `.bashrc` settings.
-
+``` {.yaml}
+username: xxxxxxxxx
+password: xxxxxxxxx
+```
 
 # Usage
 

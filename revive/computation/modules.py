@@ -97,22 +97,26 @@ class MLP(nn.Module):
         return self.net(x)
 
 class ResBlock(nn.Module):
-    def __init__(self, input_feature : int, output_feature : int, norm : str = 'bn'):
+    def __init__(self, input_feature : int, output_feature : int, norm : str = 'ln'):
         super().__init__()
 
         if norm == 'ln':
             norm_class = torch.nn.LayerNorm
+            self.process_net = torch.nn.Sequential(
+                torch.nn.Linear(input_feature, output_feature),
+                norm_class(output_feature),
+                torch.nn.ReLU(True),
+                torch.nn.Linear(output_feature, output_feature),
+                norm_class(output_feature),
+                torch.nn.ReLU(True)
+            )
         else:
-            norm_class = torch.nn.BatchNorm1d
-
-        self.process_net = torch.nn.Sequential(
-            torch.nn.Linear(input_feature, output_feature),
-            norm_class(output_feature),
-            torch.nn.ReLU(True),
-            torch.nn.Linear(output_feature, output_feature),
-            norm_class(output_feature),
-            torch.nn.ReLU(True)
-        )
+            self.process_net = torch.nn.Sequential(
+                torch.nn.Linear(input_feature, output_feature),
+                torch.nn.ReLU(True),
+                torch.nn.Linear(output_feature, output_feature),
+                torch.nn.ReLU(True)
+            )
 
         if not input_feature == output_feature:
             self.skip_net = torch.nn.Linear(input_feature, output_feature)

@@ -123,7 +123,6 @@ class ReviveServer:
                  debug : bool = False,
                  revive_config_file_path  : Optional[str] = None,
                  **kwargs):
-        self._check_license()
         assert policy_mode == 'None' or tuning_mode == 'None', 'Cannot perform both policy training and parameter tuning!'
 
         # ray.init(local_mode=True) # debug only
@@ -133,31 +132,46 @@ class ReviveServer:
         parser = list2parser(config)
         self.config = parser.parse_known_args()[0].__dict__
 
+        self.run_id = run_id or uuid.uuid4().hex
+        self.workspace = os.path.abspath(os.path.join(log_dir, self.run_id))
+        self.config['workspace'] = self.workspace
+        os.makedirs(self.workspace, mode=0o777, exist_ok=True)
+        assert os.path.exists(self.workspace)
+        self.log_path = os.path.join(os.path.abspath(self.workspace),"revive.log")
+        logger.add(self.log_path)
+
+        self.revive_config_file_path = revive_config_file_path
+
         if revive_config_file_path is not None:
             with open(revive_config_file_path, 'r') as f:
                 custom_config = json.load(f)
             self.config.update(custom_config)
             for parameter_description in custom_config.get('base_config', {}):
                 self.config[parameter_description['name']] = parameter_description['default']
+        else:
+            self.revive_config_file_path = os.path.join(self.workspace, "config.json")
+            with open(self.revive_config_file_path, 'w') as f:
+                json.dump(self.config,f)
+
+        ''' preprocess config'''
+
 
         # NOTE: in crypto mode, each trail is fixed to use one GPU.
         self.config['is_crypto'] = os.environ.get('REVIVE_CRYPTO', 0)
         setup_seed(self.config['global_seed'])
-        
-        
-        self.run_id = run_id or uuid.uuid4().hex
-        self.workspace = os.path.abspath(os.path.join(log_dir, self.run_id))
-        self.config['workspace'] = self.workspace
-        os.makedirs(self.workspace, mode=0o777, exist_ok=True)
-        assert os.path.exists(self.workspace)
-        logger.add(os.path.join(os.path.abspath(self.workspace),"revive.log"))
+
+        self.venv_mode = venv_mode
+        self.policy_mode = policy_mode
+        self.tuning_mode = tuning_mode
+        self.tune_initial_state = tune_initial_state
         
         ''' create dataset '''
         self.data_file = dataset_file_path
         self.config_file = dataset_desc_file_path
         self.val_file = val_file_path
         self.dataset = OfflineDataset(self.data_file, self.config_file, self.config['ignore_check'])
-        self.runtime_env = {"env_vars": {"PYTHONPATH":os.pathsep.join(sys.path)}}
+        self._check_license()
+        self.runtime_env = {"env_vars": {"PYTHONPATH":os.pathsep.join(sys.path), "PYARMOR_LICENSE": sys.PYARMOR_LICENSE}}
         ray.init(address=address, runtime_env=self.runtime_env)
         if self.val_file:
             self.val_dataset = OfflineDataset(self.val_file, self.config_file, self.config['ignore_check'])
@@ -175,11 +189,6 @@ class ReviveServer:
 
         self.reward_func = get_reward_fn(reward_file_path, self.config_file)
         self.config['user_func'] = self.reward_func
-
-        self.venv_mode = venv_mode
-        self.policy_mode = policy_mode
-        self.tuning_mode = tuning_mode
-        self.tune_initial_state = tune_initial_state
         
         if target_policy_name is None:
             target_policy_name = list(self.config['graph'].keys())[0]
@@ -283,6 +292,9 @@ class ReviveServer:
                 self.config['min_distance'] = 0.5 * np.log(2 * np.pi) - 10
                 
             logger.info(f"Distance is between {self.config['min_distance']} and {self.config['max_distance']}")
+
+            if self.config["venv_algo"] == "revive":
+                self.config["venv_algo"] = "ppo"
 
             if self.venv_mode == 'once':
                 venv_trainer = ray.remote(VenvTrain).remote(self.config, self.venv_logger, command=sys.argv[1:])
@@ -480,8 +492,5 @@ class ReviveServer:
         return self.best_parameter, train_log
 
     def _check_license(self):
-        import importlib
-        try:
-            importlib.import_module(f'revive.algo.venv.revive')
-        except:
-            importlib.import_module(f'revive.dist.algo.venv.revive')
+        from revive.utils.auth_utils import check_license
+        check_license(self)

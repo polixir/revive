@@ -305,6 +305,7 @@ class VenvTrain(object):
     def __init__(self, config, logger, command=None):
         self.config = config
         self.logger = logger
+
         self.algo = VenvAlgorithm(self.config["venv_algo"])  # 指定venv的训练算法
         if 'venv_algo_config' in config.keys() and self.config['venv_algo'] in config['venv_algo_config'].keys():
             update_description(self.algo.operator.PARAMETER_DESCRIPTION, config['venv_algo_config'][self.config['venv_algo']])

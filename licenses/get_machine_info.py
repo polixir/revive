@@ -1,6 +1,12 @@
 import os
+import sys
 import argparse
-from revive.utils.license_utils import get_machine_info
+
+try:
+    from revive.utils.license_utils import get_machine_info
+except ModuleNotFoundError as e:
+    print(f"{e}, Please install 'REVIVE SDK' first.")
+    sys.exit()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='The file path where the machine information is saved.')

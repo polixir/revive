@@ -13,6 +13,7 @@
     Lesser General Public License for more details.
 """
 
+import loguru
 import torch
 import warnings
 import numpy as np
@@ -329,6 +330,8 @@ class DesicionGraph:
                     self.metric_nodes.append(node)
         assert len(self.metric_nodes) >= 1, f"At least one non-leaf node is required for metric."
 
+        self.is_target_network = False
+
     def register_node(self, node_name : str, node_class):
         r''' Register a node with given node class '''
         assert self.nodes[node_name] is None, f'Cannot register node `{node_name}`, the node is already registered as `{type(self.nodes[node_name])}`'
@@ -350,6 +353,35 @@ class DesicionGraph:
                 node_names.append(node_name)
         return node_names
 
+    def register_target_nodes(self):
+        self.target_nodes = deepcopy(self.nodes)
+
+    def del_target_nodes(self):
+        assert not self.is_target_network
+        del self.target_nodes
+        
+    def use_target_network(self,):
+        if self.is_target_network is False:
+            self.target_nodes, self.nodes = self.nodes, self.target_nodes
+            self.is_target_network = True
+
+    def not_use_target_network(self,):
+        if self.is_target_network is True:
+            self.target_nodes, self.nodes = self.nodes, self.target_nodes
+            self.is_target_network = False
+
+    def update_target_network(self, polyak=0.99):
+        with torch.no_grad():
+            for node_name, node in self.nodes.items():
+                if not node.node_type == 'function':
+                    target_node = self.target_nodes[node_name]
+                    for p, p_targ in zip(node.network.parameters(), target_node.network.parameters()):
+                        # NB: We use an in-place operations "mul_", "add_" to update target
+                        # params, as opposed to "mul" and "add", which would make new tensors.
+                        p_targ.data.mul_(polyak)
+                        p_targ.data.add_((1 - polyak) * p.data)
+
+
     def mark_tunable(self, node_name : str) -> None:
         r'''Mark a leaf variable as tunable'''
         assert node_name in self.external_factors, 'Only external factors can be tunable!'
@@ -364,13 +396,18 @@ class DesicionGraph:
         for node in self.nodes.values():
             node.register_processor(self.processor)
 
-    def get_node(self, node_name : str) -> DesicionNode:
+    def get_node(self, node_name : str, use_target: bool = False) -> DesicionNode:
         '''get the node by name'''
+        if self.nodes[node_name].node_type == 'network':
+            if use_target:
+                assert hasattr(self, "target_nodes"), "Not have target nodes. You should register target nodes firstly."
+                return self.target_nodes[node_name]
+
         return self.nodes[node_name]
 
-    def compute_node(self, node_name : str, inputs : Dict[str, torch.Tensor], *args, **kwargs):
+    def compute_node(self, node_name : str, inputs : Dict[str, torch.Tensor], use_target: bool = False, *args, **kwargs):
         '''compute the node by name'''
-        return self.get_node(node_name)(inputs, *args, **kwargs)
+        return self.get_node(node_name, use_target)(inputs, *args, **kwargs)
 
     def get_relation_node_names(self) -> List[str]:
         ''' 
@@ -429,8 +466,10 @@ class DesicionGraph:
             if source_node.node_type == 'network' and target_node.node_type == 'network':
                 target_node.set_network(source_node.get_network())
 
-    def get_leaf(self, graph : Dict[str, List[str]]) -> List[str]:
+    def get_leaf(self, graph : Dict[str, List[str]] = None) -> List[str]:
         ''' return the leaf of the graph in *alphabet order* '''
+        if graph is None:
+            graph = self
         outputs = [name for name in graph.keys()]
         inputs = []
         for names in graph.values(): inputs += names

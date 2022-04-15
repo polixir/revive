@@ -7,7 +7,7 @@ import argparse
 from tempfile import TemporaryDirectory
 
 
-def get_machine_info(output="./machine_info.json"):
+def get_machine_info(output="./machine_info.json", online=False):
     r"""
     Use pyarmor register a License.
 
@@ -45,9 +45,18 @@ def get_machine_info(output="./machine_info.json"):
             
     machine_info = {"hd_txt": lines,  "hd_info": hd_info}
 
+    if online:
+        with open(output,"w") as f:
+            json.dump(machine_info,f)
+        with open(output, "r") as f:
+            machine_info = f.readlines()[0]
+        return machine_info
+
     with open(output,"w") as f:
         print(f"Svae machine info -> {output}")
         json.dump(machine_info,f)
+
+    
 
 
 

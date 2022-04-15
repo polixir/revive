@@ -25,10 +25,11 @@ from ray.tune import Stopper
 
 
 class SysStopper(Stopper):
-    def __init__(self, workspace, max_iter: int = 0):
+    def __init__(self, workspace, max_iter: int = 0, stop_callback = None):
         self._workspace = workspace
         self._max_iter = max_iter
         self._iter = defaultdict(lambda: 0)
+        self.stop_callback = stop_callback
 
     def __call__(self, trial_id, result):
         if self._max_iter > 0:
@@ -36,6 +37,8 @@ class SysStopper(Stopper):
             if self._iter[trial_id] >= self._max_iter:
                 return True
         if result["stop_flag"]:
+            if self.stop_callback:
+                self.stop_callback()
             return True
         
         return False
@@ -44,6 +47,9 @@ class SysStopper(Stopper):
         if os.path.exists(os.path.join(self._workspace,'.env.json')):
             with open(os.path.join(self._workspace,'.env.json'), 'r') as f:
                 _data = json.load(f)
+            if _data["REVIVE_STOP"]:
+                if self.stop_callback:
+                    self.stop_callback()
             return _data["REVIVE_STOP"]
         else:
             return False
@@ -121,33 +127,60 @@ class CustomSearchGenerator(SearchGenerator):
             trial_id=trial_id)
         return trial
 
+from ray.tune.suggest.basic_variant import _TrialIterator, convert_to_experiment_list, count_spec_samples, count_variants
+from ray.tune.suggest.basic_variant import warnings, Union, List, itertools, Experiment, SERIALIZATION_THRESHOLD
+
+class TrialIterator(_TrialIterator):
+    def create_trial(self, resolved_vars, spec):
+        trial_id = self.uuid_prefix + ("%05d" % self.counter)
+        experiment_tag = str(self.counter)
+        # Always append resolved vars to experiment tag?
+        if resolved_vars:
+            experiment_tag += "_{}".format(format_vars(resolved_vars))
+        spec['config']['tag'] = experiment_tag
+        self.counter += 1
+        return create_trial_from_spec(
+            spec,
+            self.output_path,
+            self.parser,
+            evaluated_params=flatten_resolved_vars(resolved_vars),
+            trial_id=trial_id,
+            experiment_tag=experiment_tag)
+
 class CustomBasicVariantGenerator(BasicVariantGenerator):
-    def _generate_trials(self, num_samples, unresolved_spec, output_path=""):
-        """Generates Trial objects with the variant generation process.
+    def add_configurations(
+            self,
+            experiments: Union[Experiment, List[Experiment], Dict[str, Dict]]):
+        """Chains generator given experiment specifications.
 
-        Uses a fixed point iteration to resolve variants. All trials
-        should be able to be generated at once.
-
-        See also: `ray.tune.suggest.variant_generator`.
-
-        Yields:
-            Trial object
+        Arguments:
+            experiments (Experiment | list | dict): Experiments to run.
         """
+        experiment_list = convert_to_experiment_list(experiments)
+        for experiment in experiment_list:
+            grid_vals = count_spec_samples(experiment.spec, num_samples=1)
+            lazy_eval = grid_vals > SERIALIZATION_THRESHOLD
+            if lazy_eval:
+                warnings.warn(
+                    f"The number of pre-generated samples ({grid_vals}) "
+                    "exceeds the serialization threshold "
+                    f"({int(SERIALIZATION_THRESHOLD)}). Resume ability is "
+                    "disabled. To fix this, reduce the number of "
+                    "dimensions/size of the provided grid search.")
 
-        if "run" not in unresolved_spec:
-            raise TuneError("Must specify `run` in {}".format(unresolved_spec))
-        for _ in range(num_samples):
-            for resolved_vars, spec in generate_variants(unresolved_spec):
-                trial_id = self._uuid_prefix + ("%05d" % self._counter)
-                self._counter += 1
-                experiment_tag = str(self._counter)
-                if resolved_vars:
-                    experiment_tag += "_{}".format(format_vars(resolved_vars))
-                spec['config']['tag'] = experiment_tag # pass down the tag
-                yield create_trial_from_spec(
-                    spec,
-                    output_path,
-                    self._parser,
-                    evaluated_params=flatten_resolved_vars(resolved_vars),
-                    trial_id=trial_id,
-                    experiment_tag=experiment_tag)
+            previous_samples = self._total_samples
+            points_to_evaluate = copy.deepcopy(self._points_to_evaluate)
+            self._total_samples += count_variants(experiment.spec,
+                                                  points_to_evaluate)
+            iterator = TrialIterator(
+                uuid_prefix=self._uuid_prefix,
+                num_samples=experiment.spec.get("num_samples", 1),
+                unresolved_spec=experiment.spec,
+                constant_grid_search=self._constant_grid_search,
+                output_path=experiment.dir_name,
+                points_to_evaluate=points_to_evaluate,
+                lazy_eval=lazy_eval,
+                start=previous_samples)
+            self._iterators.append(iterator)
+            self._trial_generator = itertools.chain(self._trial_generator,
+                                                    iterator)

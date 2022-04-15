@@ -40,6 +40,7 @@ from revive.data.dataset import data_creator
 from revive.utils.raysgd_utils import ReviveTorchTrainer, TorchTrainer
 from revive.utils.tune_utils import TUNE_LOGGERS, CustomSearchGenerator, CustomBasicVariantGenerator
 from revive.utils.common_utils import *
+from revive.utils.auth_utils import customer_uploadTrainLog
 
 warnings.filterwarnings('ignore')
 
@@ -49,11 +50,18 @@ def catch_error(func):
         try:
             return func(self, *args, **kwargs)
         except Exception as e:
-            raise e
             error_message = traceback.format_exc()
             logger.warning('Detect error:{}, Error Message: {}'.format(e,error_message))
             ray.get(self._data_buffer.update_status.remote(self._traj_id, 'error', error_message))
             self._stop_flag = True
+            try:
+                customer_uploadTrainLog(self.config["trainId"],
+                                        os.path.join(os.path.abspath(self._workspace),"revive.log"),
+                                        "train.simulator",
+                                        "fail",
+                                        self.config["accessToken"])
+            except Exception as e:
+                logger.info(f"{e}")
             return {
                 'stop_flag' : True,
                 'now_metric' : np.inf,
@@ -128,6 +136,8 @@ class VenvOperator(TrainingOperator):
             random_search_config = {}
 
             for description in cls.PARAMETER_DESCRIPTION:
+                if 'tune' in description.keys() and not description["tune"]:
+                    continue 
                 if 'search_mode' in description.keys():
                     if description['search_mode'] == 'continuous': 
                         random_search_config[description['name']] = tune.uniform(*description['search_values'])
@@ -160,6 +170,8 @@ class VenvOperator(TrainingOperator):
             dim_dict = {}
 
             for description in cls.PARAMETER_DESCRIPTION:
+                if 'tune' in description.keys() and not description["tune"]:
+                    continue 
                 if 'search_mode' in description.keys():
                     if description['search_mode'] == 'continuous': 
                         dim_dict[description['name']] = (ValueType.CONTINUOUS, description['search_values'], min(description['search_values']))
@@ -190,6 +202,8 @@ class VenvOperator(TrainingOperator):
             config["total_num_of_trials"] = 1
 
             for description in cls.PARAMETER_DESCRIPTION:
+                if 'tune' in description.keys() and not description["tune"]:
+                    continue 
                 if 'search_mode' in description.keys():
                     if description['search_mode'] == 'grid': 
                         grid_search_config[description['name']] = tune.grid_search(description['search_values'])
@@ -207,6 +221,8 @@ class VenvOperator(TrainingOperator):
             bayes_search_space = {}
 
             for description in cls.PARAMETER_DESCRIPTION:
+                if 'tune' in description.keys() and not description["tune"]:
+                    continue 
                 if 'search_mode' in description.keys():
                     if description['search_mode'] == 'continuous': 
                         bayes_search_space[description['name']] = description['search_values']
@@ -898,6 +914,16 @@ class VenvOperator(TrainingOperator):
                 shutil.rmtree(self._traj_dir_bak)
                 os.remove(self._filename_bak)
 
+        if self._stop_flag:
+            try:
+                customer_uploadTrainLog(self.config["trainId"],
+                                        os.path.join(os.path.abspath(self._workspace),"revive.log"),
+                                        "train.simulator",
+                                        "success",
+                                        self.config["accessToken"])
+            except Exception as e:
+                logger.info(f"{e}")
+
         return info
 
     def _load_checkpoint(self,info):
@@ -1027,6 +1053,15 @@ class VenvAlgorithm:
 
     def __init__(self, algo : str):
         self.algo = algo
+        if self.algo == "revive" or self.algo == "ppo":
+            self.algo = "ppo"
+        elif self.algo == "td3":
+            self.algo = "td3"
+        elif self.algo == "bc":
+            self.algo = "bc"
+        else:
+            raise NotImplementedError
+
         try:
             self.algo_module = importlib.import_module(f'revive.dist.algo.venv.{self.algo}')
             logger.info(f"Import encryption venv algorithm module -> {self.algo}!")

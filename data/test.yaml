@@ -20,7 +20,7 @@ metadata:
       min: 1
       max: 5
       num: 5
-  - obs_4:
+  - obs_5:
       dim: obs
       type: discrete
       min: 10

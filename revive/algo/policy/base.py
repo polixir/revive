@@ -40,6 +40,7 @@ from revive.data.dataset import data_creator
 from revive.utils.raysgd_utils import ReviveTorchTrainer, TorchTrainer
 from revive.utils.common_utils import *
 from revive.utils.tune_utils import TUNE_LOGGERS, CustomSearchGenerator, CustomBasicVariantGenerator
+from revive.utils.auth_utils import customer_uploadTrainLog
 
 warnings.filterwarnings('ignore')
 
@@ -49,11 +50,18 @@ def catch_error(func):
         try:
             return func(self, *args, **kwargs)
         except Exception as e:
-            raise e
             error_message = traceback.format_exc()
             logger.warning('Detect error:{}, Error Message: {}'.format(e,error_message))
             ray.get(self._data_buffer.update_status.remote(self._traj_id, 'error', error_message))
             self._stop_flag = True
+            try:
+                customer_uploadTrainLog(self.config["trainId"],
+                                        os.path.join(os.path.abspath(self._workspace),"revive.log"),
+                                        "train.policy",
+                                        "fail",
+                                        self.config["accessToken"])
+            except Exception as e:
+                logger.info(f"{e}")
             return {
                 'stop_flag' : True,
                 'reward_trainPolicy_on_valEnv' : - np.inf,
@@ -69,14 +77,14 @@ class PolicyOperator(TrainingOperator):
     @property
     def policy(self):
         if isinstance(self.train_models, list) or isinstance(self.train_models, tuple):
-            return self.train_models[0]
+            return self.train_models[:-1]
         else:
             return self.train_models
 
     @property
     def val_policy(self):
         if isinstance(self.val_models, list) or isinstance(self.val_models, tuple):
-            return self.val_models[0]
+            return self.val_models[:-1]
         else:
             return self.val_models
     
@@ -301,24 +309,25 @@ class PolicyOperator(TrainingOperator):
     def _setup_models(self, config : Dict[str, Any]):
         r'''setup models, optimizers and dataloaders.'''
         if not self.double_validation:
-            self.train_node = deepcopy(self._graph.get_node(self.policy_name))
-            models = self.model_creator(config, self.train_node)
+            self.train_nodes = {policy_name:deepcopy(self._graph.get_node(policy_name)) for policy_name in self.policy_name}
+            
+            models = self.model_creator(config, self.train_nodes)
             optimizers = self.optimizer_creator(models, config)
-
             self.models, self.optimizers = self.register(models=(models), optimizers=(optimizers))
 
             self.train_models = self.models
             self.train_optimizers = self.optimizers
             self.val_models = None
             self.val_optimizers = None
-
-            self.train_node.set_network(self.policy)
+            
+            for train_node,policy in zip(self.train_nodes,self.policy):
+                train_node.set_network(policy)
         else:
-            self.train_node = deepcopy(self._graph.get_node(self.policy_name))
-            train_models = self.model_creator(config, self.train_node)
+            self.train_nodes = {policy_name:deepcopy(self._graph.get_node(policy_name)) for policy_name in self.policy_name}
+            train_models = self.model_creator(config, self.train_nodes)
             train_optimizers = self.optimizer_creator(train_models, config)
-            self.val_node = deepcopy(self._graph.get_node(self.policy_name))
-            val_models = self.model_creator(config, self.val_node)
+            self.val_nodes = {policy_name:deepcopy(self._graph.get_node(policy_name)) for policy_name in self.policy_name}
+            val_models = self.model_creator(config, self.val_nodes)
             val_optimizers = self.optimizer_creator(val_models, config)
 
             self.model_length = len(train_models)
@@ -331,8 +340,10 @@ class PolicyOperator(TrainingOperator):
             self.val_models = self.models[self.model_length:]
             self.val_optimizers = self.optimizers[self.optimizer_length:]
 
-            self.train_node.set_network(self.policy)
-            self.val_node.set_network(self.val_policy)
+            for train_node,policy in zip(self.train_nodes.values(), self.policy):
+                train_node.set_network(policy)
+            for val_node,policy in zip(self.val_nodes.values(), self.val_policy):
+                val_node.set_network(policy)
 
     @catch_error
     def setup(self, config : Dict[str, Any]):
@@ -344,6 +355,11 @@ class PolicyOperator(TrainingOperator):
         self._graph = config['graph']
         self._processor = self._graph.processor
         self.policy_name = self.config['target_policy_name']
+        if isinstance(self.policy_name, str):
+            self.policy_name = [self.policy_name, ]
+        # sort the policy by graph
+        self.policy_name = [policy_name for policy_name in self.policy_name if policy_name in self._graph.keys()]
+
         self.double_validation = self.config['policy_double_validation']
         self._filename = os.path.join(self._workspace, "train_policy.json")
         self._data_buffer.set_total_trials.remote(config.get("total_num_of_trials", 1))
@@ -403,8 +419,8 @@ class PolicyOperator(TrainingOperator):
         self.envs_train = self.envs_train[:self.config['num_venv_in_use']]
         self.envs_val = self.envs_val[:self.config['num_venv_in_use']]
 
-        self.behaviour_node = self.envs[0].graph.get_node(self.policy_name)
-        self.behaviour_policy = self.behaviour_node.get_network()
+        self.behaviour_nodes = [self.envs[0].graph.get_node(policy_name) for policy_name in self.policy_name]
+        self.behaviour_policys =  [behaviour_node.get_network() for behaviour_node in self.behaviour_nodes]
 
         # find average reward from expert data
         dataset = ray.get(self.config['dataset'])
@@ -429,9 +445,12 @@ class PolicyOperator(TrainingOperator):
         self._save_models(self._traj_dir)
         self._update_metric()
 
-        self.action_dims = []
-        for action_dim in self._graph.descriptions[self.policy_name]:
-            self.action_dims.append(list(action_dim.keys())[0])
+        self.action_dims = {}
+        for policy_name in self.policy_name:
+            action_dims = []
+            for action_dim in self._graph.descriptions[policy_name]:
+                action_dims.append(list(action_dim.keys())[0])
+            self.action_dims[policy_name] = action_dims
 
     def _early_stop(self, info : Dict[str, Any]):
         info["stop_flag"] = self._stop_flag
@@ -447,14 +466,15 @@ class PolicyOperator(TrainingOperator):
         if self._max_reward == ray.get(self._data_buffer.get_max_reward.remote()):
             self._save_models(self._workspace, with_policy=False)
 
-    def _wrap_policy(self, policy : torch.nn.Module, device: [str, Any] = None) -> PolicyModelDev:
-        policy_node = deepcopy(self.behaviour_node)
-        policy = deepcopy(policy)
-        policy_node.set_network(policy)
-        if device:
-            policy_node.to(device)
-        policy = PolicyModelDev(policy_node)
-        return policy
+    def _wrap_policy(self, policys : List[torch.nn.Module,], device: [str, Any] = None) -> PolicyModelDev:
+        policy_nodes = deepcopy(self.behaviour_nodes)
+        policys = deepcopy(policys)
+        for policy_node,policy in zip(policy_nodes,policys):
+            policy_node.set_network(policy)
+            if device:
+                policy_node.to(device)
+        policys = PolicyModelDev(policy_nodes)
+        return policys
 
     def _save_models(self, path : str, with_policy : bool = True):
         torch.save(self.policy, os.path.join(path, "tuned_policy.pt"))
@@ -613,8 +633,8 @@ class PolicyOperator(TrainingOperator):
             batch trajectories
 
         """
-
-        target_policy.reset()
+        for policy in target_policy:
+            policy.reset()
         
         if isinstance(env, list):
             for _env in env: _env.reset()
@@ -631,47 +651,48 @@ class PolicyOperator(TrainingOperator):
         sample_fn = lambda dist: dist.rsample() if maintain_grad_flow else dist.sample()
 
         for i in range(traj_length):
-            if isinstance(env, list):
-                result_batch = []
-                for _env in env:
-                    _current_batch = deepcopy(current_batch)
-                    _current_batch = _env.pre_computation(_current_batch, deterministic, clip)
-                    result_batch.append(_current_batch)
-                result_batch = Batch.stack(result_batch, axis=0)
-                select_indexes = np.random.randint(0, len(self.envs_train), size=batch_size)
-                current_batch = result_batch[select_indexes, np.arange(batch_size)]
-            else:
-                current_batch = env.pre_computation(current_batch, deterministic, clip)
+            for policy_index, policy_name in enumerate(self.policy_name):
+                if isinstance(env, list):
+                    result_batch = []
+                    for _env in env:
+                        _current_batch = deepcopy(current_batch)
+                        _current_batch = _env.pre_computation(_current_batch, deterministic, clip, policy_index)
+                        result_batch.append(_current_batch)
+                    result_batch = Batch.stack(result_batch, axis=0)
+                    select_indexes = np.random.randint(0, len(self.envs_train), size=batch_size)
+                    current_batch = result_batch[select_indexes, np.arange(batch_size)]
+                else:
+                    current_batch = env.pre_computation(current_batch, deterministic, clip, policy_index)
 
-            policy_input = get_input_from_graph(self._graph, self.policy_name, current_batch)
-            if 'offlinerl' in str(type(target_policy)):
-                action = target_policy(policy_input)
-            else:
-                action_dist = target_policy(policy_input)
-                action = sample_fn(action_dist)
-                action_log_prob = (action_dist.log_prob(action).unsqueeze(dim=-1)).detach()
-                current_batch[self.policy_name + '_log_prob'] = action_log_prob
-            current_batch[self.policy_name] = action
+                policy_input = get_input_from_graph(self._graph, policy_name, current_batch)
+                if 'offlinerl' in str(type(target_policy[policy_index])):
+                    action = target_policy[policy_index](policy_input)
+                else:
+                    action_dist = target_policy[policy_index](policy_input)
+                    action = sample_fn(action_dist)
+                    action_log_prob = (action_dist.log_prob(action).unsqueeze(dim=-1)).detach()
+                    current_batch[policy_name + '_log_prob'] = action_log_prob
+                current_batch[policy_name] = action
 
-            if isinstance(env, list):
-                result_batch = []
-                for _env in env:
-                    _current_batch = deepcopy(current_batch)
-                    _current_batch = _env.post_computation(_current_batch, deterministic, clip)
-                    result_batch.append(_current_batch)
-                result_batch = Batch.stack(result_batch, axis=0)
-                select_indexes = np.random.randint(0, len(self.envs_train), size=batch_size)
-                current_batch = result_batch[select_indexes, np.arange(batch_size)]
-            else:
-                current_batch = env.post_computation(current_batch, deterministic, clip)
+                if isinstance(env, list):
+                    result_batch = []
+                    for _env in env:
+                        _current_batch = deepcopy(current_batch)
+                        _current_batch = _env.post_computation(_current_batch, deterministic, clip, policy_index)
+                        result_batch.append(_current_batch)
+                    result_batch = Batch.stack(result_batch, axis=0)
+                    select_indexes = np.random.randint(0, len(self.envs_train), size=batch_size)
+                    current_batch = result_batch[select_indexes, np.arange(batch_size)]
+                else:
+                    current_batch = env.post_computation(current_batch, deterministic, clip, policy_index)
 
-            generated_data.append(current_batch)
+                generated_data.append(current_batch)
 
-            if i == traj_length - 1 : break
+                if i == traj_length - 1 : break
 
-            current_batch = Batch(self._graph.state_transition(current_batch))
-            for k in self._graph.leaf: 
-                if not k in self._graph.transition_map.keys(): current_batch[k] = expert_data[i+1][k]
+                current_batch = Batch(self._graph.state_transition(current_batch))
+                for k in self._graph.leaf: 
+                    if not k in self._graph.transition_map.keys(): current_batch[k] = expert_data[i+1][k]
 
         generated_data = Batch.stack(generated_data)
 
@@ -814,23 +835,32 @@ class PolicyOperator(TrainingOperator):
             self._update_metric()
 
         if self._stop_flag:
+            try:
+                customer_uploadTrainLog(self.config["trainId"],
+                                        os.path.join(os.path.abspath(self._workspace),"revive.log"),
+                                        "train.policy",
+                                        "success",
+                                        self.config["accessToken"])
+            except Exception as e:
+                logger.info(f"{e}")
+
             # save double validation plot after training
             plt_double_venv_validation(self._traj_dir, 
                                        self.train_average_reward, 
                                        self.val_average_reward, 
                                        os.path.join(self._traj_dir, 'double_validation.png'))
             
-            # save rolllout action image
             graph = self.envs_train[0].graph
-            graph.nodes[self.policy_name] = deepcopy(self.infer_policy)._policy_model.node
+            for policy_index, policy_name in enumerate(self.policy_name):
+                graph.nodes[policy_name] = deepcopy(self.infer_policy)._policy_model.nodes[policy_index]
+
+            # save rolllout action image
             rollout_save_path = os.path.join(self._traj_dir, 'rollout_images')
-            save_rollout_action(rollout_save_path, graph, self.device, self.train_dataset, {self.policy_name:self.action_dims})
+            save_rollout_action(rollout_save_path, graph, self.device, self.train_dataset, self.action_dims)
 
             # policy to tree and plot the tree
-            graph = self.envs_train[0].graph
-            graph.nodes[self.policy_name] = deepcopy(self.infer_policy)._policy_model.node
             tree_save_path = os.path.join(self._traj_dir, 'policy_tree')
-            net_to_tree(tree_save_path, graph, self.device, self.train_dataset, {self.policy_name:self.action_dims} )
+            net_to_tree(tree_save_path, graph, self.device, self.train_dataset, self.action_dims )
 
         return info
 

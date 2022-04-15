@@ -217,7 +217,7 @@ class OfflineDataset(torch.utils.data.Dataset):
 
         # make sure data is in float32
         for k, v in raw_data.items():
-            if v.dtype == np.float64:
+            if v.dtype != np.float32:
                 raw_data[k] = v.astype(np.float32)
 
         # mark the start and end of each trajectory
@@ -427,12 +427,6 @@ class OfflineDataset(torch.utils.data.Dataset):
                         parse_file_path = file_path
                     function_type = get_function_type(parse_file_path, function_name)
                     file_name = os.path.split(os.path.splitext(parse_file_path)[0])[-1]
-                    # TODO: Update the import mode, use runtime_env(ray==1.9)
-                    #try: 
-                    #    shutil.copyfile(parse_file_path, os.path.join("./data/",file_name+".py"))
-                    #    parse_file_path = os.path.join("./data/",file_name+".py")
-                    #except:
-                    #    pass
                     sys.path.insert(0, os.path.dirname(parse_file_path))
                     source_file = importlib.import_module(f'{file_name}')
                     func = eval(f'source_file.{function_name}')
@@ -503,6 +497,9 @@ class OfflineDataset(torch.utils.data.Dataset):
                 discrete_max.append(_config.get('max', None))
                 discrete_min.append(_config.get('min', None))
                 discrete_num.append(_config['num'])
+            else:
+                logger.error(f"Data type {_config['type']} is not support. Please check the yaml file.")
+                raise NotImplementedError
 
             if "fit" in _config.keys() and not _config["fit"]:
                 if _config['type'] == 'category':
@@ -585,7 +582,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         for config in data_config:
             if config['type'] == 'category':
                 forward_end_index = forward_start_index + 1
-                additional_parameters.append(np.array(config['values']))
+                additional_parameters.append(np.array(config['values']).astype(np.float32))
             elif config['type'] == 'continuous':
                 forward_end_index = forward_start_index + config['dim']
                 _data = data[:, forward_start_index : forward_end_index]
@@ -880,6 +877,11 @@ def data_creator(config : dict,
 
     config['dist_configs'], config['total_dims'] = train_dataset.get_dist_configs(config)
     config['learning_nodes_num'] = train_dataset.learning_nodes_num
+
+    if training_horizon is None and val_horizon is not None:
+        training_horizon = val_horizon
+    if training_horizon is not None and val_horizon is None:
+        val_horizon = training_horizon
     
     if not double:
         train_dataset = train_dataset.trajectory_mode_(training_horizon) if training_mode == 'trajectory' else train_dataset.transition_mode_()

@@ -32,7 +32,7 @@ class VirtualEnvDev(torch.nn.Module):
         for node in self.graph.nodes.values():
             if node.node_type == 'network':
                 self.models.append(node.get_network())
-        self.set_target_policy_name(list(self.graph.keys())[0]) # default
+        self.set_target_policy_name(list(self.graph.keys())) # default
         self.revive_version = __version__
         self.device = "cpu"
 
@@ -50,14 +50,16 @@ class VirtualEnvDev(torch.nn.Module):
     def reset(self) -> None:
         self.graph.reset()
 
-    def set_target_policy_name(self, target_policy_name : str) -> None:
+    def set_target_policy_name(self, target_policy_name : list) -> None:
         self.target_policy_name = target_policy_name
 
         # find target index
+        self.index = []
         for i, (output_name, input_names) in enumerate(self.graph.items()):
-            if output_name == self.target_policy_name:
-                self.index = i
-                break
+            if output_name in self.target_policy_name:
+                self.index.append(i)
+        self.index.sort()
+        
 
     def _data_preprocess(self, data : np.ndarray, data_key : str = "obs") -> torch.Tensor:
         data = self.graph.processor.process_single(data, data_key)
@@ -145,13 +147,14 @@ class VirtualEnvDev(torch.nn.Module):
     def pre_computation(self, 
                         data : Dict[str, torch.Tensor], 
                         deterministic : bool = True,
-                        clip : bool = False) -> Dict[str, torch.Tensor]:
+                        clip : bool = False,
+                        policy_index : int = 0) -> Dict[str, torch.Tensor]:
         '''run all the node before target node. skip if the node value is already available.'''
         self.check_version()
 
         sample_fn = get_sample_function(deterministic)
 
-        for node_name in list(self.graph.keys())[:self.index]:
+        for node_name in list(self.graph.keys())[:self.index[policy_index]]:
             if not node_name in data.keys():
                 output = self.graph.compute_node(node_name, data)
                 if isinstance(output, torch.Tensor):
@@ -167,13 +170,14 @@ class VirtualEnvDev(torch.nn.Module):
     def post_computation(self, 
                          data : Dict[str, torch.Tensor], 
                          deterministic : bool = True,
-                         clip : bool = False) -> Dict[str, torch.Tensor]:
+                         clip : bool = False,
+                         policy_index : int = 0) -> Dict[str, torch.Tensor]:
         '''run all the node after target node'''
         self.check_version()
 
         sample_fn = get_sample_function(deterministic)
 
-        for node_name in list(self.graph.keys())[self.index+1:]:
+        for node_name in list(self.graph.keys())[self.index[policy_index]+1:]:
             output = self.graph.compute_node(node_name, data)
             if isinstance(output, torch.Tensor):
                 data[node_name] = output
@@ -323,11 +327,11 @@ class VirtualEnv:
         self._env.export2onnx(onnx_file, verbose)
 
 class PolicyModelDev(torch.nn.Module):
-    def __init__(self, node : DesicionNode):
+    def __init__(self, nodes : List[DesicionNode,]):
         super().__init__()
-        self.node = node
-        self.model = self.node.get_network()
-        self.target_policy_name = self.node.name
+        self.nodes = nodes
+        self.models = [node.get_network() for node in self.nodes]
+        self.target_policy_name = [node.name for node in self.nodes ]
         self.revive_version = __version__
         self.device = "cpu"
 
@@ -341,7 +345,8 @@ class PolicyModelDev(torch.nn.Module):
             warnings.warn(f'detect the policy is create by version {self.revive_version}, but current version is {__version__}, maybe not compactable.')
 
     def reset(self):
-        self.node.reset()
+        for node in self.nodes:
+            node.reset()
 
     def _data_preprocess(self, data : np.ndarray, data_key : str = "obs") -> torch.Tensor:
         data = self.node.processor.process_single(data, data_key)
