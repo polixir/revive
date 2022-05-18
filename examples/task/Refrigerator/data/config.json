@@ -33,14 +33,7 @@
             "abbreviation": "vrh",
             "description": "Length of sampled trajectory, validate only if the algorithm works on sequential data.",
             "type": "int",
-            "default": 10
-        },
-        {
-            "name": "transition_mode",
-            "abbreviation": "tsm",
-            "description": "Mode of transition, choose from `global` and `local`.",
-            "type": "str",
-            "default": "global"
+            "default": 50
         },
         {
             "name": "venv_gpus_per_worker",
@@ -57,9 +50,9 @@
         },
         {
             "name": "venv_algo",
-            "description": "Algorithm used in venv training. There are currently three algorithms to choose from, `bc` , `ppo` and `td3`.",
+            "description": "Algorithm used in venv training. There are currently three algorithms to choose from, `bc` , `revive` and `td3`.",
             "type": "str",
-            "default": "ppo"
+            "default": "revive"
         },
         {
             "name": "policy_gpus_per_worker",
@@ -69,39 +62,11 @@
             "default": 1.0
         },
         {
-            "name": "num_venv_in_use",
-            "abbreviation": "nviu",
-            "description": "Max number of venvs used in policy training, clipped when there is no enough venvs available.",
-            "type": "float",
-            "default": 1
-        },
-        {
-            "name": "behavioral_policy_init",
-            "abbreviation": "bpi",
-            "description": "Whether to use the learned behavioral policy to as the initialization policy training.",
-            "type": "bool",
-            "default": true
-        },
-        {
             "name": "test_horizon",
             "abbreviation": "th",
             "description": "Rollout length of the venv test.",
             "type": "int",
-            "default": 10
-        },
-        {
-            "name": "train_venv_trials",
-            "abbreviation": "tvt",
-            "description": "Number of total trails searched by the search algorithm in venv training.",
-            "type": "int",
-            "default": 25
-        },
-        {
-            "name": "train_policy_trials",
-            "abbreviation": "tpt",
-            "description": "Number of total trails searched by the search algorithm in policy training.",
-            "type": "int",
-            "default": 10
+            "default": 50
         }
     ],
     "venv_algo_config": {
@@ -132,7 +97,7 @@
                 "description": "Depth of policy network.",
                 "abbreviation": "phl",
                 "type": "int",
-                "default": 4
+                "default": 1
             },
             {
                 "name": "policy_backbone",
@@ -152,7 +117,7 @@
                 "name": "transition_hidden_layers",
                 "abbreviation": "thl",
                 "type": "int",
-                "default": 4
+                "default": 1
             },
             {
                 "name": "transition_backbone",
@@ -222,17 +187,12 @@
                 ]
             },
             {
-                "name": "mae_reward_weight",
-                "description": "reward = (1-mae_reward_weight)*matcher_reward + mae_reward_weight*mae_reward.",
-                "type": "float",
-                "default": 0.25
-            },
-            {
                 "name": "generator_data_repeat",
                 "description": "Repeat rollout more data to train generator.",
                 "type": "int",
-                "default": 1
+                "default": 10
             }
+            
         ],
         "td3": [
             {
@@ -448,13 +408,6 @@
                 "default": 200
             },
             {
-                "name": "ppo_rollout_horizon",
-                "description": "Rollout length of the policy train.",
-                "abbreviation": "prh",
-                "type": "int",
-                "default": 100
-            },
-            {
                 "name": "policy_hidden_features",
                 "description": "Number of neurons per layer of the policy network.",
                 "abbreviation": "phf",
@@ -466,7 +419,7 @@
                 "description": "Depth of policy network.",
                 "abbreviation": "phl",
                 "type": "int",
-                "default": 4
+                "default": 2
             },
             {
                 "name": "policy_backbone",

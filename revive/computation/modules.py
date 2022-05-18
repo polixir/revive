@@ -241,15 +241,26 @@ class DistributionWrapper(nn.Module):
             :param adapt_std : it will overwrite the std part of the distribution (optional)
             :param payload : payload will be applied to the output distribution after built (optional)
         '''
+        # [ OTHER ] replace the clip with tanh
+        # [ OTHER ] better std controlling strategy is needed todo
         if self.distribution_type == 'normal':
             if self.params.get('conditioned_std', True):
                 mu, logstd = torch.chunk(x, 2, dim=-1)
+                logstd_logit = logstd
+                max_std = 0.5
+                min_std = 0.001
+                std = (torch.tanh(logstd_logit) + 1) / 2 * (max_std - min_std) + min_std
             else:
                 mu, logstd = x, self.logstd
+                logstd_logit = self.logstd
+                max_std = 0.5
+                min_std = 0.001
+                std = (torch.tanh(logstd_logit) + 1) / 2 * (max_std - min_std) + min_std
+                # std = torch.exp(logstd)
             if payload is not None:
                 mu = mu + safe_atanh(payload)
             mu = torch.tanh(mu)
-            std = adapt_std if adapt_std is not None else torch.exp(soft_clamp(logstd, self.min_logstd, self.max_logstd))
+            # std = adapt_std if adapt_std is not None else torch.exp(soft_clamp(logstd, self.min_logstd.to(logstd.device), self.max_logstd.to(logstd.device)))
             return DiagnalNormal(mu, std)
         elif self.distribution_type == 'gmm':
             if self.params.get('conditioned_std', True):

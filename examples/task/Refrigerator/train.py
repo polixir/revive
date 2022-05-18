@@ -55,7 +55,7 @@ if __name__ == '__main__':
     revive_config_file_path = os.path.join(DATADIR, args['revive_config_file']) if not args['revive_config_file'] is None else None
     tuning_initial_state_file = os.path.join(DATADIR, args['tuning_initial_state_file']) if not args['tuning_initial_state_file'] is None else None
 
-    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(revive.__file__))), 'logs')
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 
     if tuning_initial_state_file is not None:
         tune_initial_state = load_data(tuning_initial_state_file)

@@ -385,15 +385,18 @@ class VenvOperator(TrainingOperator):
         self._register_models_to_graph(self.graph_train, self.nodes_models_train)
         self._register_models_to_graph(self.graph_val, self.nodes_models_val)
 
-        self.nodes_map = {}
+        
         self.total_dim = 0
         for node_name in self._graph.metric_nodes:
             self.total_dim += self.config['total_dims'][node_name]['input']
 
+        self.nodes_map = {}
+        for node_name in list(self._graph.nodes) + list(self._graph.leaf):
             node_dims = []
-            for node_dim in self.graph_train.descriptions[node_name]:
+            for node_dim in self._graph.descriptions[node_name]:
                 node_dims.append(list(node_dim.keys())[0])
             self.nodes_map[node_name] = node_dims
+        logger.info(f"Nodes : {self.nodes_map}")
 
         self.graph_to_save_train = self.graph_train
         self.graph_to_save_val = self.graph_val
@@ -844,7 +847,8 @@ class VenvOperator(TrainingOperator):
                 i = self.graph_train.metric_nodes.index(node_name)
                 if info[f"{self.NAME}/{node_name}_{self.config['venv_metric']}_trainEnv_on_valData"] < self._least_metric_train[i]:
                     self._least_metric_train[i] = info[f"{self.NAME}/{node_name}_{self.config['venv_metric']}_trainEnv_on_valData"]
-                    self.best_graph_train.nodes[node_name] = self.graph_to_save_train.get_node(node_name)
+                    # [ SIGNIFICANT OTHER ] deepcopy is necessary, otherwise, the best is always the same to the current!
+                    self.best_graph_train.nodes[node_name] = deepcopy(self.graph_to_save_train.get_node(node_name))
                     need_update.append(True)
                 else:
                     need_update.append(False)
@@ -853,7 +857,8 @@ class VenvOperator(TrainingOperator):
                 i = self.graph_val.metric_nodes.index(node_name)
                 if info[f"{self.NAME}/{node_name}_{self.config['venv_metric']}_valEnv_on_trainData"] < self._least_metric_val[i]:
                     self._least_metric_val[i] = info[f"{self.NAME}/{node_name}_{self.config['venv_metric']}_valEnv_on_trainData"]
-                    self.best_graph_val.nodes[node_name] = self.graph_to_save_val.get_node(node_name)
+                    # [ SIGNIFICANT OTHER ] deepcopy is necessary, otherwise, the best is always the same to the current!
+                    self.best_graph_val.nodes[node_name] = deepcopy(self.graph_to_save_val.get_node(node_name))
                     need_update.append(True)
                 else:
                     need_update.append(False)
@@ -889,7 +894,8 @@ class VenvOperator(TrainingOperator):
                 info['VAL_' + k] = v
 
         '''plot histogram when training is finished'''
-        if self._stop_flag or self._epoch_cnt % 100 == 1:
+        # [ OTHER ] more frequent valuation
+        if self._stop_flag or self._epoch_cnt % 10 == 1:
             histogram_path = os.path.join(self._traj_dir, 'histogram')
             if not os.path.exists(histogram_path):
                 os.makedirs(histogram_path)
@@ -901,6 +907,9 @@ class VenvOperator(TrainingOperator):
                 # save rolllout action image
                 rollout_save_path = os.path.join(self._traj_dir, 'rollout_images')
                 save_rollout_action(rollout_save_path, self.best_graph_train, self.device, self.train_dataset, self.nodes_map)
+                # [ OTHER ] not only plotting the best model, but also plotting the result of the current model
+                rollout_save_path = os.path.join(self._traj_dir, 'rollout_images_current')
+                save_rollout_action(rollout_save_path, self.graph_train, self.device, self.train_dataset, self.nodes_map)
             except Exception as e:
                 logger.warning(e)
 

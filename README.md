@@ -39,6 +39,10 @@ You can also view and download all versions of the code package through the rele
 
 **Releases Page :** https://agit.ai/Polixir/revive/releases
 
+Or pull the lastest image contains SDK and its runtime environment from Docker Hub :
+
+    $ docker pull polixir/revive-sdk
+
 ###  Register an Account
 
 The REVIVE SDK library is developed by Polixir. We encrypt and protect a few algorithm modules, which have their own intellectual property rights, and you can register an account to use the features of the full algorithm package.

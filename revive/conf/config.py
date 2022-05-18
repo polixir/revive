@@ -120,6 +120,7 @@ DEFAULT_CONFIG = [
         'description' : 'Mode of transition, choose from `global` and `local`.',
         'type' : str,
         'default' : 'global',
+        'doc': True,
     }, 
     {
         'name' : 'venv_gpus_per_worker',
@@ -138,9 +139,9 @@ DEFAULT_CONFIG = [
     },  
     {
         'name' : 'venv_algo',
-        'description' : 'Algorithm used in venv training. There are currently three algorithms to choose from, `bc` , `revive` and `td3`.',
+        'description' : 'Algorithm used in venv training. There are currently three algorithms to choose from, `bc` , `ppo` and `td3`.',
         'type' : str,
-        'default' : 'revive',
+        'default' : 'ppo',
         'doc': True,
     },  
     {
@@ -209,7 +210,8 @@ DEFAULT_CONFIG = [
         'abbreviation' : 'nviu',
         "description": "Max number of venvs used in policy training, clipped when there is no enough venvs available.",
         "type": float,
-        "default": 3,
+        "default": 1,
+        'doc': True,
     },
     {
         "name": "behavioral_policy_init",
@@ -217,6 +219,7 @@ DEFAULT_CONFIG = [
         "description": "Whether to use the learned behavioral policy to as the initialization policy training.",
         "type": bool,
         "default": True,
+        'doc': True,
     },
     {
         "name": "policy_algo",
@@ -332,6 +335,7 @@ DEFAULT_CONFIG = [
         "description": "Number of total trails searched by the search algorithm in venv training.",
         "type": int,
         "default": 25,
+        'doc': True,
     },
     {
         "name": "policy_search_algo",
@@ -346,6 +350,7 @@ DEFAULT_CONFIG = [
         "description": "Number of total trails searched by the search algorithm in policy training.",
         "type": int,
         "default": 10,
+        'doc': True,
     },
     {
         "name": "global_checkpoint_period",

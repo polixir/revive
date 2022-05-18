@@ -41,6 +41,7 @@ setup(
         'PyPDF2==1.26.0',
         'pyarmor==7.3.0',
         'prometheus_client==0.13.1',
+        'prettytable',
     ],
     url="https://agit.ai/Polixir/revive"
 )

@@ -330,8 +330,10 @@ class PolicyModelDev(torch.nn.Module):
     def __init__(self, nodes : List[DesicionNode,]):
         super().__init__()
         self.nodes = nodes
+        self.node = self.nodes[0]
         self.models = [node.get_network() for node in self.nodes]
-        self.target_policy_name = [node.name for node in self.nodes ]
+        self.target_policy_name = [node.name for node in self.nodes]
+        self.target_policy_name = self.target_policy_name[0]
         self.revive_version = __version__
         self.device = "cpu"
 

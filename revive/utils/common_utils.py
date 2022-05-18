@@ -614,7 +614,8 @@ def tb_data_parse(tensorboard_log_dir, keys: list = []):
     parse_data = lambda key: [(i.step,i.value) for i in ea.scalars.Items(key)] 
     
     if keys:
-        assert set(keys) < set(ea_keys), "Keys Error: there are some keys not in tensorboard logs!"
+        if set(keys) < set(ea_keys):
+            logger.info(f"Keys Error: there are some keys not in tensorboard logs!")
         res = { key:parse_data(key) for key in keys }
     else:
         res = { key:parse_data(key) for key in ea_keys }

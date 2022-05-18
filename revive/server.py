@@ -131,7 +131,6 @@ class ReviveServer:
         config = DEBUG_CONFIG if debug else DEFAULT_CONFIG
         parser = list2parser(config)
         self.config = parser.parse_known_args()[0].__dict__
-
         self.run_id = run_id or uuid.uuid4().hex
         self.workspace = os.path.abspath(os.path.join(log_dir, self.run_id))
         self.config['workspace'] = self.workspace

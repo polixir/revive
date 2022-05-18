@@ -26,3 +26,5 @@ build/
 .pytest_cache
 docs/_build/*
 *.pdf
+*_parsed.py
+*.out

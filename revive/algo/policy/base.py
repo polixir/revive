@@ -452,6 +452,14 @@ class PolicyOperator(TrainingOperator):
                 action_dims.append(list(action_dim.keys())[0])
             self.action_dims[policy_name] = action_dims
 
+        self.nodes_map = {}
+        for node_name in list(self._graph.nodes) + list(self._graph.leaf):
+            node_dims = []
+            for node_dim in self._graph.descriptions[node_name]:
+                node_dims.append(list(node_dim.keys())[0])
+            self.nodes_map[node_name] = node_dims
+
+
     def _early_stop(self, info : Dict[str, Any]):
         info["stop_flag"] = self._stop_flag
         return info
@@ -829,7 +837,8 @@ class PolicyOperator(TrainingOperator):
         
         info = {k : info[k] for k in filter(lambda k: not k.startswith('last'), info.keys())}
 
-        if info["reward_trainPolicy_on_valEnv"] > self._max_reward:
+        #if info["reward_trainPolicy_on_valEnv"] > self._max_reward:
+        if True:
             self._max_reward = info["reward_trainPolicy_on_valEnv"]
             self._save_models(self._traj_dir)
             self._update_metric()
@@ -856,7 +865,7 @@ class PolicyOperator(TrainingOperator):
 
             # save rolllout action image
             rollout_save_path = os.path.join(self._traj_dir, 'rollout_images')
-            save_rollout_action(rollout_save_path, graph, self.device, self.train_dataset, self.action_dims)
+            save_rollout_action(rollout_save_path, graph, self.device, self.train_dataset, self.nodes_map)
 
             # policy to tree and plot the tree
             tree_save_path = os.path.join(self._traj_dir, 'policy_tree')

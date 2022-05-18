@@ -229,7 +229,10 @@ class Onehot(OneHotCategorical, TorchDistributionMixin, ReviveDistributionMixin)
     @property
     def mode(self):
         index = torch.argmax(self.logits, dim=-1)
-        sample = F.one_hot(index, self.event_shape[0])
+        num_classes = self.event_shape[0]
+        if torch.is_tensor(num_classes):
+            num_classes = num_classes.item()
+        sample = F.one_hot(index, num_classes)
         return sample + self.probs - self.probs.detach()
 
     @property
