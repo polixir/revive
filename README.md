@@ -56,11 +56,10 @@ The process  can be divided into the following two steps:
 **Step 2**. Configure registered account information.
 
 1.  Open the `config.yaml` file in your home directory (for example,`/home/your-user-name/.revive/.config.yaml`) in a text editor. After installing REVIVE SDK, the config.yaml file will be generated automatically.
-2.  Fill in the registered username and password.
+2.  Get the accesskey from the [user center of the REVIVE Website](https://revive.cn/user-center/service) and fill it into the `config.yaml`.
 
 ``` {.yaml}
-username: xxxxxxxxx
-password: xxxxxxxxx
+accesskey: xxxxxxxxx
 ```
 
 # Usage

@@ -49,10 +49,7 @@ setup(
 config_folder = os.path.join(os.path.expanduser('~'),".revive")
 if not os.path.exists(config_folder):
     os.makedirs(config_folder)
-    import yaml
-    from collections import OrderedDict
     with open(os.path.join(config_folder,'config.yaml'), 'w', encoding='utf-8') as f:
         lines = []
-        lines.append("username: xxxxxxxxx"+"\n")
-        lines.append("password: xxxxxxxxx"+"\n")
+        lines.append("accesskey: xxxxxxxxx"+"\n")
         f.writelines(lines)

@@ -59,6 +59,7 @@ def catch_error(func):
                                         os.path.join(os.path.abspath(self._workspace),"revive.log"),
                                         "train.simulator",
                                         "fail",
+                                        self._acc,
                                         self.config["accessToken"])
             except Exception as e:
                 logger.info(f"{e}")
@@ -332,6 +333,7 @@ class VenvOperator(TrainingOperator):
         self._least_metric_val = [np.inf] * len(self._graph.metric_nodes)
         self.least_val_metric = np.inf
         self.least_train_metric = np.inf
+        self._acc = 0
 
         # get id
         self._ip = ray._private.services.get_node_ip_address()
@@ -470,7 +472,7 @@ class VenvOperator(TrainingOperator):
         acc = 0.5 + (0.4*acc)
         if acc == 0.5:
             acc = 0      
-
+        self._acc = acc
         self._data_buffer.update_metric.remote(self._traj_id, {
             "metric": metric,
             "acc" : acc,
@@ -929,6 +931,7 @@ class VenvOperator(TrainingOperator):
                                         os.path.join(os.path.abspath(self._workspace),"revive.log"),
                                         "train.simulator",
                                         "success",
+                                        self._acc,
                                         self.config["accessToken"])
             except Exception as e:
                 logger.info(f"{e}")

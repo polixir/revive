@@ -1,7 +1,6 @@
 import os
 import sys
 import time
-import json
 import uuid
 import yaml
 import hashlib
@@ -22,8 +21,7 @@ def customer_createTrain(machineCode: str,
                          yamlFileClientUrl: str,
                          configFileClientUrl: str,
                          logFileClientUrl: str,
-                         username: str,
-                         password: str, 
+                         userPrivateKey: str,
                         ):
     """ 
     Verify the user's training privileges.
@@ -41,8 +39,7 @@ def customer_createTrain(machineCode: str,
              'yamlFileClientUrl': yamlFileClientUrl,
              'configFileClientUrl': configFileClientUrl,
              'logFileClientUrl': logFileClientUrl,
-             'username': username,
-             'password': password}
+             'userPrivateKey': userPrivateKey}
              
     files=[
     ('yamlFile',(os.path.basename(yamlFileClientUrl),open(yamlFileClientUrl,'rb'),'application/octet-stream')),
@@ -100,6 +97,7 @@ def customer_uploadTrainLog(trainId: str,
                             logFile: str,
                             trainType: str,
                             trainResult: str,
+                            trainScore: str,
                             accessToken: str,
                             ):
     """ 
@@ -111,7 +109,8 @@ def customer_uploadTrainLog(trainId: str,
 
     payload={'trainId': trainId,
              'trainType': trainType,
-             'trainResult' : trainResult}
+             'trainResult' : trainResult,
+             'trainScore' : trainScore}
     
     files=[('logFile',(os.path.basename(logFile),open(logFile,'rb'),'application/octet-stream')),]
     headers = {'requestId': uuid.uuid4().hex,
@@ -179,13 +178,11 @@ def check_license(cls):
         config_folder = os.path.join(os.path.expanduser('~'),".revive")
         with open(os.path.join(config_folder,'config.yaml'), 'r', encoding='utf-8') as f:
             revive_config = yaml.load(f, Loader=yaml.FullLoader)
-
-        username = revive_config["username"]
-        password = revive_config["password"]
         
-        hl = hashlib.md5()
-        hl.update(password.encode("utf-8"))
-        password = hl.hexdigest()
+        if "accesskey" not in revive_config.keys():
+            logger.error(f"Please check the ``~/.revive/config.yaml`` file for the configuration.")
+            sys.exit() 
+        userPrivateKey = revive_config["accesskey"]
         
         args = {'machineCode': machineCode,
                 'trainModelSimulatorTotalCount': trainModelSimulatorTotalCount,
@@ -195,8 +192,7 @@ def check_license(cls):
                 'yamlFileClientUrl': yamlFileClientUrl,
                 'configFileClientUrl': configFileClientUrl,
                 'logFileClientUrl': logFileClientUrl,
-                'username': username,
-                'password': password}
+                'userPrivateKey': userPrivateKey}
 
         args = {k:str(v) for k,v in args.items()}
 

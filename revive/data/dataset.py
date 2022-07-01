@@ -54,18 +54,24 @@ class OfflineDataset(torch.utils.data.Dataset):
         self.config_file = config_file
         self.ignore_check = ignore_check
 
+        self._raw_data = None
+        self._raw_config = None
+        self._pre_data(self.config_file, self.data_file)
         self._load_config(self.config_file)
         self._load_data(self.data_file)
-
+        
         # pop up unused keys
         used_keys = list(self.graph.keys()) + self.graph.leaf + ['done']
         for key in list(self.data.keys()):
             if key not in used_keys:
-                self.data.pop(key)
-                self.raw_columns.pop(key)
-                self.data_configs.pop(key)
-                self.orders.pop(key)
-                warnings.warn(f'Warning: pop up unused key: {key}')
+                try:
+                    self.data.pop(key)
+                    self.raw_columns.pop(key)
+                    self.data_configs.pop(key)
+                    self.orders.pop(key)
+                    warnings.warn(f'Warning: pop up unused key: {key}')
+                except Exception as e:
+                    logger.info(f"{e}")
 
         self._check_data()
 
@@ -90,6 +96,71 @@ class OfflineDataset(torch.utils.data.Dataset):
 
         # by default, dataset is in trajectory mode
         self.trajectory_mode_(horizon)
+
+    def _pre_data(self, config_file, data_file):
+        # parse ts_nodes
+        with open(config_file, 'r', encoding='UTF-8') as f:
+            raw_config = yaml.load(f, Loader=yaml.FullLoader)
+        raw_data = load_data(data_file)
+
+        graph_dict = raw_config['metadata'].get('graph', None)
+        nodes_config = raw_config['metadata'].get('nodes', None)
+
+        if nodes_config:
+            # collect nodes config
+            ts_frames_config = {"ts_"+k:v["ts"] for k,v in nodes_config.items() if "ts" in v.keys()}
+            ts_frames_config = {k:v for k,v in ts_frames_config.items() if v > 1}
+            max_ts_frames = max(ts_frames_config.values())
+
+            nodes = list(graph_dict.keys())
+            for output_node in list(graph_dict.keys()):
+                nodes += list(graph_dict[output_node])
+            nodes = list(set(nodes))
+            # parse nno ts_nodes
+            for index, node in enumerate(nodes):
+                if node.startswith("next_ts_"):
+                    nodes[index] = "next_" + node[8:]
+                if node.startswith("ts_"):
+                    nodes[index] = node[3:]     
+
+            ts_nodes = {"ts_"+node:node for node in nodes if "ts_"+node in ts_frames_config.keys()}
+            for ts_node,node in ts_nodes.items():
+                if node not in raw_data.keys():
+                    logger.error(f"Can't find '{node}' node data.")
+                    sys.exit()
+            
+            # ts_node npz data
+            trj_index = [0,] + list(raw_data["index"])
+            new_data = {k:[] for k in ts_nodes.keys()}
+            new_index = []
+            i = 1
+            for trj_start_index, trj_end_index in zip(trj_index[:-1], trj_index[1:]):
+                new_index.append(trj_end_index+(i*(max_ts_frames-1)))
+                i += 1
+                for ts_node,node in ts_nodes.items():
+                    ts_node_frames = ts_frames_config[ts_node]
+                    pad_data = np.concatenate([np.repeat(raw_data[node][trj_start_index:trj_start_index+1],repeats=ts_node_frames-1,axis=0), raw_data[node][trj_start_index:trj_end_index]])
+                    new_data[ts_node].append(np.concatenate([pad_data[i:i+(trj_end_index-trj_start_index)] for i in range(ts_node_frames)], axis=1))
+            new_data = {k:np.concatenate(v,axis=0) for k,v in new_data.items()}
+            raw_data.update(new_data)
+
+            # ts_node columns
+            for ts_node, node in ts_nodes.items():
+                ts_node_frames = ts_frames_config[ts_node]
+                node_columns = [c for c in raw_config['metadata']['columns'] if list(c.values())[0]["dim"] == node]
+                ts_node_columns = []
+                ts_index = 0
+                for _ in range(ts_node_frames):
+                    for node_column in node_columns:
+                        node_column_value = deepcopy(list(node_column.values())[0])
+                        node_column_value["dim"] = ts_node
+                        ts_node_columns.append({ts_node+"_"+str(ts_index):node_column_value})
+                        ts_index += 1
+            
+                raw_config['metadata']['columns'] += ts_node_columns
+            
+            self._raw_config = raw_config
+            self._raw_data = raw_data
 
     def _check_data(self):
         '''check if the data format is correct'''
@@ -213,7 +284,11 @@ class OfflineDataset(torch.utils.data.Dataset):
             3. try to compute values of unprovided node with expert function.
             4. if any transition variable is not available, truncate the trajectories by 1.
         '''
-        raw_data = load_data(data_file)
+        if self._raw_data:
+            raw_data = self._raw_data
+        else:
+            raw_data = load_data(data_file)
+
 
         # make sure data is in float32
         for k, v in raw_data.items():
@@ -364,14 +439,17 @@ class OfflineDataset(torch.utils.data.Dataset):
             2. dimensions of each node will be reordered (category, discrete, continuous) to speed up computation.
             3. register expert functions and tunable parameters if defined.
         """
-        with open(config_file, 'r', encoding='UTF-8') as f:
-            raw_config = yaml.load(f, Loader=yaml.FullLoader)
+        if self._raw_config:
+            raw_config = self._raw_config
+        else:
+            with open(config_file, 'r', encoding='UTF-8') as f:
+                raw_config = yaml.load(f, Loader=yaml.FullLoader)
 
         # collect description for the same node
         data_config = raw_config['metadata']['columns']
         self.columns = data_config
         keys = set([list(d.values())[0]['dim'] for d in data_config])
-        
+
         raw_columns = {}
         config = {}
         order = {}
@@ -386,7 +464,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         metric_nodes = raw_config['metadata'].get('metric_nodes', None)
 
         graph = DesicionGraph(graph_dict, raw_columns, fit, metric_nodes)
-
         # copy the raw columns for transition variables to allow them as input to other nodes
         for curr_name, next_name in graph.transition_map.items():
             raw_columns[next_name] = raw_columns[curr_name]
@@ -521,7 +598,6 @@ class OfflineDataset(torch.utils.data.Dataset):
             'forward' : forward_order,
             'backward' : backward_order,
         }
-        
         
         if discrete_count > 0:
             config.append({'type' : 'discrete', "dim" : discrete_count, 'max' : discrete_max, 'min' : discrete_min, 'num' : discrete_num})

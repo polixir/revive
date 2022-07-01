@@ -1,0 +1,25 @@
+metadata:
+  graph:
+    action:
+    - ts_temperature
+    next_ts_temperature:
+    - action
+    - ts_temperature
+    - door_open
+  columns:
+  - obs_temp:
+      dim: temperature
+      type: continuous
+      max: 20
+      min: -20
+  - power_action:
+      dim: action
+      type: continuous
+      max: 10
+      min: 0
+  - factor_door_state:
+      dim: door_open
+      type: continuous
+  nodes:   
+    temperature:
+      ts: 5

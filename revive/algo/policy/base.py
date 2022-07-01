@@ -59,6 +59,7 @@ def catch_error(func):
                                         os.path.join(os.path.abspath(self._workspace),"revive.log"),
                                         "train.policy",
                                         "fail",
+                                        self._max_reward,
                                         self.config["accessToken"])
             except Exception as e:
                 logger.info(f"{e}")
@@ -297,7 +298,7 @@ class PolicyOperator(TrainingOperator):
             self._val_loader_train = None
         else:
             train_loader_train, val_loader_train, train_loader_val, val_loader_val = self.data_creator(config)
-            
+        
             self.register_data(train_loader=train_loader_train, validation_loader=val_loader_train)
             self._train_loader_train = self._train_loader
             self._val_loader_train = self._validation_loader
@@ -320,7 +321,7 @@ class PolicyOperator(TrainingOperator):
             self.val_models = None
             self.val_optimizers = None
             
-            for train_node,policy in zip(self.train_nodes,self.policy):
+            for train_node,policy in zip(self.train_nodes.values(), self.policy):
                 train_node.set_network(policy)
         else:
             self.train_nodes = {policy_name:deepcopy(self._graph.get_node(policy_name)) for policy_name in self.policy_name}
@@ -364,6 +365,7 @@ class PolicyOperator(TrainingOperator):
         self._filename = os.path.join(self._workspace, "train_policy.json")
         self._data_buffer.set_total_trials.remote(config.get("total_num_of_trials", 1))
         self._data_buffer.inc_trial.remote()
+        self._max_reward = -np.inf
 
         # get id
         self._ip = ray._private.services.get_node_ip_address()
@@ -550,7 +552,7 @@ class PolicyOperator(TrainingOperator):
     def venv_test(self, expert_data : Batch, target_policy, traj_length=None, scope : str = 'trainPolicy_on_valEnv'):
         r""" Use the virtual env model to test the policy model"""
         rewards = []
-        envs = self.envs_val if scope == 'trainPolicy_on_valEnv' else self.envs_train
+        envs = self.envs_val if "valEnv" in scope  else self.envs_train
         for env in envs:
             generated_data, info = self._run_rollout(expert_data, target_policy, env, traj_length, deterministic=self.config['deterministic_test'], clip=True)
             reward = generated_data.reward.squeeze(dim=-1)
@@ -788,15 +790,16 @@ class PolicyOperator(TrainingOperator):
 
         info = metric_meters_train.summary()
 
-        metric_meters_train = AverageMeterCollection()
-        with torch.no_grad():
-            for batch_idx, batch in enumerate(iter(self._train_loader_val)):
-                batch_info = {"batch_idx": batch_idx}
-                batch_info.update(info)
-                metrics = self.validate_batch(batch, batch_info, scope='trainPolicy_on_trainEnv')
-                metric_meters_train.update(metrics, n=metrics.pop(NUM_SAMPLES, 1))
+        if self.double_validation:
+            metric_meters_train = AverageMeterCollection()
+            with torch.no_grad():
+                for batch_idx, batch in enumerate(iter(self._train_loader_val)):
+                    batch_info = {"batch_idx": batch_idx}
+                    batch_info.update(info)
+                    metrics = self.validate_batch(batch, batch_info, scope='trainPolicy_on_trainEnv')
+                    metric_meters_train.update(metrics, n=metrics.pop(NUM_SAMPLES, 1))
 
-        info.update(metric_meters_train.summary())
+            info.update(metric_meters_train.summary())
 
         if (not self.config['real_env_test_frequency'] == 0) and \
             self._epoch_cnt % self.config['real_env_test_frequency'] == 0:
@@ -837,27 +840,33 @@ class PolicyOperator(TrainingOperator):
         
         info = {k : info[k] for k in filter(lambda k: not k.startswith('last'), info.keys())}
 
-        #if info["reward_trainPolicy_on_valEnv"] > self._max_reward:
-        if True:
-            self._max_reward = info["reward_trainPolicy_on_valEnv"]
+        if self.double_validation:
+            reward_flag = "reward_trainPolicy_on_valEnv"
+        else:
+            reward_flag = "reward_trainenv"
+        if info[reward_flag] > self._max_reward:
+            self._max_reward = info[reward_flag]
             self._save_models(self._traj_dir)
             self._update_metric()
 
         if self._stop_flag:
+            # revive online server
             try:
                 customer_uploadTrainLog(self.config["trainId"],
                                         os.path.join(os.path.abspath(self._workspace),"revive.log"),
                                         "train.policy",
                                         "success",
+                                        self._max_reward,
                                         self.config["accessToken"])
             except Exception as e:
                 logger.info(f"{e}")
 
             # save double validation plot after training
-            plt_double_venv_validation(self._traj_dir, 
-                                       self.train_average_reward, 
-                                       self.val_average_reward, 
-                                       os.path.join(self._traj_dir, 'double_validation.png'))
+            if self.double_validation:
+                plt_double_venv_validation(self._traj_dir, 
+                                        self.train_average_reward, 
+                                        self.val_average_reward, 
+                                        os.path.join(self._traj_dir, 'double_validation.png'))
             
             graph = self.envs_train[0].graph
             for policy_index, policy_name in enumerate(self.policy_name):
@@ -879,7 +888,9 @@ class PolicyOperator(TrainingOperator):
     def validate_batch(self, expert_data : Batch, batch_info : Dict[str, float], scope : str = 'trainPolicy_on_valEnv'):
         expert_data.to_torch(device=self._device)
         policy_source = scope.split('_')[-1]
-        if policy_source == 'train':
+        if not self.double_validation:
+            info = self.venv_test(expert_data, self.policy, traj_length=self.config['test_horizon'], scope="trainenv")
+        elif policy_source == 'train':
             info = self.venv_test(expert_data, self.policy, traj_length=self.config['test_horizon'], scope=scope)
         else:
             assert self.double_validation
