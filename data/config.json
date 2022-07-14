@@ -57,9 +57,9 @@
         },
         {
             "name": "venv_algo",
-            "description": "Algorithm used in venv training. There are currently three algorithms to choose from, `bc` , `ppo` and `td3`.",
+            "description": "Algorithm used in venv training. There are currently three algorithms to choose from, `bc` , `revive_p` and `revive_t`.",
             "type": "str",
-            "default": "ppo"
+            "default": "revive_p"
         },
         {
             "name": "policy_gpus_per_worker",
@@ -105,7 +105,7 @@
         }
     ],
     "venv_algo_config": {
-        "ppo": [
+        "revive_p": [
             {
                 "name": "revive_batch_size",
                 "description": "Batch size of training process.",
@@ -234,7 +234,7 @@
                 "default": 1
             }
         ],
-        "td3": [
+        "revive_t": [
             {
                 "name": "revive_batch_size",
                 "description": "Batch size of training process.",
@@ -249,6 +249,12 @@
                 "type": "int",
                 "default": 1000
             },
+            {
+                "name" : "fintune",
+                "abbreviation" : "bet",
+                "type" : "int",
+                "default" : 1
+            },  
             {
                 "name": "policy_hidden_features",
                 "description": "Number of neurons per layer of the policy network.",
@@ -452,7 +458,7 @@
                 "description": "Rollout length of the policy train.",
                 "abbreviation": "prh",
                 "type": "int",
-                "default": 100
+                "default": 10
             },
             {
                 "name": "policy_hidden_features",

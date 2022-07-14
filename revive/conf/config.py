@@ -139,9 +139,9 @@ DEFAULT_CONFIG = [
     },  
     {
         'name' : 'venv_algo',
-        'description' : 'Algorithm used in venv training. There are currently three algorithms to choose from, `bc` , `ppo` and `td3`.',
+        'description' : 'Algorithm used in venv training. There are currently three algorithms to choose from, `bc` , `revive_p` and `revive_t`.',
         'type' : str,
-        'default' : 'ppo',
+        'default' : 'revive_p',
         'doc': True,
     },  
     {

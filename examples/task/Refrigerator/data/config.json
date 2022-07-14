@@ -50,9 +50,9 @@
         },
         {
             "name": "venv_algo",
-            "description": "Algorithm used in venv training. There are currently three algorithms to choose from, `bc` , `revive` and `td3`.",
+            "description": "Algorithm used in venv training. There are currently three algorithms to choose from, `bc` , `revive_p` and `revive_t`.",
             "type": "str",
-            "default": "revive"
+            "default": "revive_p"
         },
         {
             "name": "policy_gpus_per_worker",
@@ -70,7 +70,7 @@
         }
     ],
     "venv_algo_config": {
-        "ppo": [
+        "revive_p": [
             {
                 "name": "revive_batch_size",
                 "description": "Batch size of training process.",
@@ -194,7 +194,7 @@
             }
             
         ],
-        "td3": [
+        "revive_t": [
             {
                 "name": "revive_batch_size",
                 "description": "Batch size of training process.",

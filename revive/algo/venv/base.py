@@ -1065,10 +1065,10 @@ class VenvAlgorithm:
 
     def __init__(self, algo : str):
         self.algo = algo
-        if self.algo == "revive" or self.algo == "ppo":
-            self.algo = "ppo"
-        elif self.algo == "td3":
-            self.algo = "td3"
+        if self.algo == "revive" or self.algo == "revive_p" or self.algo == "revivep" or self.algo == "revive_ppo":
+            self.algo = "revivep"
+        elif self.algo == "revive_t" or self.algo == "revivet"  or self.algo == "revive_td3":
+            self.algo = "revivet"
         elif self.algo == "bc":
             self.algo = "bc"
         else:

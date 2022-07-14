@@ -293,7 +293,7 @@ class ReviveServer:
             logger.info(f"Distance is between {self.config['min_distance']} and {self.config['max_distance']}")
 
             if self.config["venv_algo"] == "revive":
-                self.config["venv_algo"] = "ppo"
+                self.config["venv_algo"] = "revive_p"
 
             if self.venv_mode == 'once':
                 venv_trainer = ray.remote(VenvTrain).remote(self.config, self.venv_logger, command=sys.argv[1:])

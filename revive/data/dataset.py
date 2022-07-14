@@ -161,6 +161,7 @@ class OfflineDataset(torch.utils.data.Dataset):
             
             self._raw_config = raw_config
             self._raw_data = raw_data
+            np.savez_compressed("test_ts.npz",**raw_data)
 
     def _check_data(self):
         '''check if the data format is correct'''
@@ -917,10 +918,11 @@ def collect_data(expert_data : List[Batch], graph : DesicionGraph) -> Batch:
     r''' Collection function for PyTorch DataLoader '''
     expert_data = Batch.stack(expert_data, axis=-2)
     expert_data.to_torch()
-    selected_name = list(graph.transition_map.keys())[0]
-    if len(expert_data[selected_name].shape) == 3:
-        for tunable_name in graph.tunable:
-            expert_data[tunable_name] = expert_data[tunable_name].expand(expert_data[selected_name].shape[0], *[-1] * len(expert_data[tunable_name].shape))
+    if graph.transition_map:
+        selected_name = list(graph.transition_map.keys())[0]
+        if len(expert_data[selected_name].shape) == 3:
+            for tunable_name in graph.tunable:
+                expert_data[tunable_name] = expert_data[tunable_name].expand(expert_data[selected_name].shape[0], *[-1] * len(expert_data[tunable_name].shape))
     return expert_data
 
 def get_loader(dataset : OfflineDataset, config : dict, is_sample : bool = True):

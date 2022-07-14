@@ -887,13 +887,11 @@ class PolicyOperator(TrainingOperator):
 
     def validate_batch(self, expert_data : Batch, batch_info : Dict[str, float], scope : str = 'trainPolicy_on_valEnv'):
         expert_data.to_torch(device=self._device)
-        policy_source = scope.split('_')[-1]
         if not self.double_validation:
             info = self.venv_test(expert_data, self.policy, traj_length=self.config['test_horizon'], scope="trainenv")
-        elif policy_source == 'train':
+        elif "trainPolicy" in scope:
             info = self.venv_test(expert_data, self.policy, traj_length=self.config['test_horizon'], scope=scope)
-        else:
-            assert self.double_validation
+        elif "valPolicy" in scope:
             info = self.venv_test(expert_data, self.val_policy, traj_length=self.config['test_horizon'], scope=scope)
         
         return info
