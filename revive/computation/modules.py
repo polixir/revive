@@ -316,7 +316,7 @@ class FeedForwardPolicy(torch.nn.Module):
                  dist_config : list,
                  norm : str = None, 
                  hidden_activation : str = 'leakyrelu', 
-                 backbone_type : Union[str, np.str] = 'mlp'):
+                 backbone_type : Union[str, np.str_] = 'mlp'):
         super().__init__()
 
         if backbone_type == 'mlp':
@@ -350,7 +350,7 @@ class RecurrentPolicy(torch.nn.Module):
                  hidden_features : int, 
                  hidden_layers : int, 
                  dist_config : list, 
-                 backbone_type : Union[str, np.str] ='gru'):
+                 backbone_type : Union[str, np.str_] ='gru'):
         super().__init__()
 
         RNN = torch.nn.GRU if backbone_type == 'gru' else torch.nn.LSTM
@@ -382,7 +382,7 @@ class FeedForwardTransition(FeedForwardPolicy):
                  dist_config : list,
                  norm : Optional[str] = None, 
                  hidden_activation : str = 'leakyrelu', 
-                 backbone_type : Union[str, np.str] = 'mlp',
+                 backbone_type : Union[str, np.str_] = 'mlp',
                  mode : str = 'global',
                  obs_dim : Optional[int] = None):
         
@@ -418,7 +418,7 @@ class RecurrentTransition(RecurrentPolicy):
                  hidden_features : int, 
                  hidden_layers : int, 
                  dist_config : list,
-                 backbone_type : Union[str, np.str] = 'mlp',
+                 backbone_type : Union[str, np.str_] = 'mlp',
                  mode : str = 'global',
                  obs_dim : Optional[int] = None):
         
@@ -447,7 +447,7 @@ class FeedForwardMatcher(torch.nn.Module):
                  hidden_layers : int, 
                  hidden_activation : str = 'leakyrelu', 
                  norm : str = None,
-                 backbone_type : Union[str, np.str] = 'mlp'):
+                 backbone_type : Union[str, np.str_] = 'mlp'):
         super().__init__()
 
         if backbone_type == 'mlp':
@@ -472,7 +472,7 @@ class RecurrentMatcher(torch.nn.Module):
                  in_features : int, 
                  hidden_features : int, 
                  hidden_layers : int, 
-                 backbone_type : Union[str, np.str] = 'gru', 
+                 backbone_type : Union[str, np.str_] = 'gru', 
                  bidirect : bool = False):
         super().__init__()
 

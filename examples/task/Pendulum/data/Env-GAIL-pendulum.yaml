@@ -1,0 +1,20 @@
+metadata:
+  graph:
+    actions:
+    - states
+    next_states:
+    - states
+    - actions
+  columns:
+  - obs_states_0:
+      dim: states
+      type: continuous
+  - obs_states_1:
+      dim: states
+      type: continuous
+  - obs_states_2:
+      dim: states
+      type: continuous
+  - action:
+      dim: actions
+      type: continuous

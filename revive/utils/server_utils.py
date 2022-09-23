@@ -27,7 +27,7 @@ from revive.computation.inference import *
 from revive.utils.common_utils import update_description, setup_seed
 from revive.algo.venv import VenvAlgorithm
 from revive.algo.policy import PolicyAlgorithm
-from revive.utils.tune_utils import CustomBasicVariantGenerator, CustomSearchGenerator, TUNE_LOGGERS, SysStopper
+from revive.utils.tune_utils import CustomBasicVariantGenerator, CustomSearchGenerator, SysStopper, get_tune_callbacks
 
 
 class DataBufferEnv:
@@ -234,7 +234,10 @@ class TuneVenvTrain(object):
     def __init__(self, config, logger, command=None):       
         self.config = config
         self.logger = logger
-        self.algo = VenvAlgorithm(self.config["venv_algo"])  # 指定venv的训练算法
+        self.workspace = os.path.join(self.config["workspace"], 'venv_tune')
+        if not os.path.exists(self.workspace):
+            os.makedirs(self.workspace)
+        self.algo = VenvAlgorithm(self.config["venv_algo"],self.workspace)  # 指定venv的训练算法
         if 'venv_algo_config' in config.keys() and self.config['venv_algo'] in config['venv_algo_config'].keys():
             update_description(self.algo.operator.PARAMETER_DESCRIPTION, config['venv_algo_config'][self.config['venv_algo']])
         self.config.update(self.algo.get_parameters(command))
@@ -244,18 +247,18 @@ class TuneVenvTrain(object):
         from ray import tune
         self.logger.update.remote(key="task_state", value="Run")
 
-        torchTrainable = self.algo.get_trainable(self.config)  # 动态获取该算法对应的trainable对象(适配tune.run)
         tune_params = self.algo.get_tune_parameters(self.config)
-        
+        torchTrainable = self.algo.get_trainable(self.config)  # 动态获取该算法对应的trainable对象(适配tune.run)
         # Seet the seed
         setup_seed(self.config["global_seed"])
         # Set tune stop
         tune_params["stop"] = SysStopper(workspace = self.config['workspace'])
         tune_params["trial_name_creator"] = trial_str_creator
+        tune_params["metric"] = "mean_accuracy"
+        tune_params["mode"] = "max"
         analysis = tune.run(torchTrainable, **tune_params)
-        best_df = analysis.dataframe(metric="least_metric", mode="min")
-        best_config = analysis.get_best_config(metric="least_metric", mode="min")
-
+        # best_df = analysis.dataframe(metric="mean_accuracy", mode="max")
+        # best_config = analysis.get_best_config(metric="mean_accuracy", mode="max")
         self.logger.update.remote(key="task_state", value="End")
 
 
@@ -264,7 +267,10 @@ class TunePolicyTrain(object):
         self.config = config
         self.logger = logger
         self.venv_logger = venv_logger
-        self.algo = PolicyAlgorithm(self.config['policy_algo'])
+        self.workspace = os.path.join(self.config["workspace"], 'policy_tune')
+        if not os.path.exists(self.workspace):
+            os.makedirs(self.workspace)
+        self.algo = PolicyAlgorithm(self.config['policy_algo'], self.workspace)
         if 'policy_algo_config' in config.keys() and self.config['policy_algo'] in config['policy_algo_config'].keys():
             update_description(self.algo.operator.PARAMETER_DESCRIPTION, config['policy_algo_config'][self.config['policy_algo']])
         self.config.update(self.algo.get_parameters(command))
@@ -281,23 +287,25 @@ class TunePolicyTrain(object):
         while True: # block until venv available
             if os.path.exists(os.path.join(self.config['workspace'], 'env.pkl')):
                 break
-            logger.info('Waiting for venv ...' )
-            time.sleep(10)
-
+            else:
+                logger.error(f"Don't find env model.")
+                import sys
+                sys.exit()
+        from ray import tune
         self.logger.update.remote(key="task_state", value="Run")
 
-        torchTrainable = self.algo.get_trainable(self.config)
         tune_params = self.algo.get_tune_parameters(self.config)
-        
+        torchTrainable = self.algo.get_trainable(self.config)  # 动态获取该算法对应的trainable对象(适配tune.run)
         # Seet the seed
         setup_seed(self.config["global_seed"])
         # Set tune stop
         tune_params["stop"] = SysStopper(workspace = self.config['workspace'])
         tune_params["trial_name_creator"] = trial_str_creator
+        tune_params["metric"] = "mean_accuracy"
+        tune_params["mode"] = "max"
         analysis = tune.run(torchTrainable, **tune_params)
-        best_df = analysis.dataframe(metric="reward_trainPolicy_on_valEnv", mode="max")
-        best_config = analysis.get_best_config(metric="reward_trainPolicy_on_valEnv", mode="max")
-
+        # best_df = analysis.dataframe(metric="mean_accuracy", mode="max")
+        # best_config = analysis.get_best_config(metric="mean_accuracy", mode="max")
         self.logger.update.remote(key="task_state", value="End")
 
 
@@ -305,54 +313,23 @@ class VenvTrain(object):
     def __init__(self, config, logger, command=None):
         self.config = config
         self.logger = logger
-
-        self.algo = VenvAlgorithm(self.config["venv_algo"])  # 指定venv的训练算法
-        if 'venv_algo_config' in config.keys() and self.config['venv_algo'] in config['venv_algo_config'].keys():
-            update_description(self.algo.operator.PARAMETER_DESCRIPTION, config['venv_algo_config'][self.config['venv_algo']])
-        self.config.update(self.algo.get_parameters(command))
         self.workspace = os.path.join(self.config["workspace"], 'venv_train')
         if not os.path.exists(self.workspace):
             os.makedirs(self.workspace)
+        self.algo = VenvAlgorithm(self.config["venv_algo"], self.workspace)  # 指定venv的训练算法
+        if 'venv_algo_config' in config.keys() and self.config['venv_algo'] in config['venv_algo_config'].keys():
+            update_description(self.algo.operator.PARAMETER_DESCRIPTION, config['venv_algo_config'][self.config['venv_algo']])
+        self.config.update(self.algo.get_parameters(command))
 
     def train(self):
         self.logger.update.remote(key="task_state", value="Run")
-        
         trainer = self.algo.get_trainer(self.config)  # 动态获取该算法对应的trainer对象
-        
+        trainer.run_config.verbose = 0
         # Seet the seed
         setup_seed(self.config["global_seed"])
-
-        from .tune_utils import VALID_SUMMARY_TYPES
-        from torch.utils.tensorboard import SummaryWriter
-        from tabulate import tabulate
-
-        writer = SummaryWriter(self.workspace)
-        epoch = 0
-        while True:
-            train_stats = trainer.train()
-            _train_stats = list(filter(lambda x: not 'last' in x[0] and type(x[1]) in VALID_SUMMARY_TYPES, train_stats.items()))
-            if self.config['verbose'] == 2: print(tabulate(_train_stats, numalign="right"))
-            val_stats = trainer.validate()
-            _val_stats = list(filter(lambda x: not 'last' in x[0] and type(x[1]) in VALID_SUMMARY_TYPES, val_stats.items()))
-            if self.config['verbose'] == 2: print(tabulate(_val_stats, numalign="right"))
-
-            for k, v in [*train_stats.items(), *val_stats.items()]:
-                if type(v) in VALID_SUMMARY_TYPES:
-                    writer.add_scalar(k, v, global_step=epoch)
-                elif isinstance(v, torch.Tensor):
-                    v = v.view(-1)
-                    writer.add_histogram(k, v, global_step=epoch)
-            writer.flush()
-
-            train_stats.update(val_stats)
-            if train_stats.get('stop_flag', False):
-                logger.info('Early stopped!')
-                break
-
-            epoch += 1
-
+        trainer.fit()
         self.logger.update.remote(key="task_state", value="End")
-        trainer.shutdown()  # Without this line, GPU memory will leak
+        # trainer.shutdown()  # Without this line, GPU memory will leak
 
 
 class PolicyTrain(object):
@@ -360,13 +337,13 @@ class PolicyTrain(object):
         self.config = config
         self.logger = logger
         self.venv_logger = venv_logger
-        self.algo = PolicyAlgorithm(self.config['policy_algo'])
-        if 'policy_algo_config' in config.keys() and self.config['policy_algo'] in config['policy_algo_config'].keys():
-            update_description(self.algo.operator.PARAMETER_DESCRIPTION, config['policy_algo_config'][self.config['policy_algo']])
-        self.config.update(self.algo.get_parameters(command))
         self.workspace = os.path.join(self.config["workspace"], 'policy_train')
         if not os.path.exists(self.workspace):
             os.makedirs(self.workspace)
+        self.algo = PolicyAlgorithm(self.config['policy_algo'], self.workspace)
+        if 'policy_algo_config' in config.keys() and self.config['policy_algo'] in config['policy_algo_config'].keys():
+            update_description(self.algo.operator.PARAMETER_DESCRIPTION, config['policy_algo_config'][self.config['policy_algo']])
+        self.config.update(self.algo.get_parameters(command))
 
     def train(self):
         if self.venv_logger is not None:
@@ -379,46 +356,20 @@ class PolicyTrain(object):
         while True: # block until venv available
             if os.path.exists(os.path.join(self.config['workspace'], 'env.pkl')):
                 break
-            logger.info('Waiting for venv ...')
-            time.sleep(10)
+            else:
+                logger.error(f"Don't find env model.")
+                time.sleep(5)
+                import sys
+                sys.exit()
 
         self.logger.update.remote(key="task_state", value="Run")
-
-        trainer = self.algo.get_trainer(self.config)
+        trainer = self.algo.get_trainer(self.config)  # 动态获取该算法对应的trainer对象
+        trainer.run_config.verbose = 0
         # Seet the seed
         setup_seed(self.config["global_seed"])
-
-        from .tune_utils import VALID_SUMMARY_TYPES
-        from torch.utils.tensorboard import SummaryWriter
-        from tabulate import tabulate
-
-        writer = SummaryWriter(self.workspace)
-        epoch = 0
-        while True:
-            train_stats = trainer.train()
-            _train_stats = list(filter(lambda x: not 'last' in x[0] and type(x[1]) in VALID_SUMMARY_TYPES, train_stats.items()))
-            if self.config['verbose'] == 2: print(tabulate(_train_stats, numalign="right"))
-            val_stats = trainer.validate()
-            _val_stats = list(filter(lambda x: not 'last' in x[0] and type(x[1]) in VALID_SUMMARY_TYPES, val_stats.items()))
-            if self.config['verbose'] == 2: print(tabulate(_val_stats, numalign="right"))
-
-            for k, v in [*train_stats.items(), *val_stats.items()]:
-                if type(v) in VALID_SUMMARY_TYPES:
-                    writer.add_scalar(k, v, global_step=epoch)
-                elif isinstance(v, torch.Tensor):
-                    v = v.view(-1)
-                    writer.add_histogram(k, v, global_step=epoch)
-            writer.flush()
-
-            train_stats.update(val_stats)
-            if train_stats.get('stop_flag', False):
-                logger.info('Early stopped!')
-                break
-
-            epoch += 1
-
+        trainer.fit()
         self.logger.update.remote(key="task_state", value="End")
-        trainer.shutdown()  # Without this line, GPU memory will leak
+        # trainer.shutdown()  # Without this line, GPU memory will leak
 
 
 def default_evaluate(config):
@@ -498,7 +449,7 @@ class ParameterTuner(object):
             'mode' : self.mode,
             "reuse_actors": self.config["reuse_actors"],
             "local_dir": self.config["workspace"],
-            "loggers": TUNE_LOGGERS,
+            "loggers": get_tune_callbacks(),
             "verbose": self.config["verbose"],
             'num_samples' : self.config['parameter_tuning_budget']
         }

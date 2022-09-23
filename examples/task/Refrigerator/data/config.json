@@ -50,7 +50,7 @@
         },
         {
             "name": "venv_algo",
-            "description": "Algorithm used in venv training. There are currently three algorithms to choose from, `bc` , `revive_p` and `revive_t`.",
+            "description": "Algorithm used in venv training. There are currently three algorithms to choose from, `bc` and `revive_p`.",
             "type": "str",
             "default": "revive_p"
         },

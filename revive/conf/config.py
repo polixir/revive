@@ -62,7 +62,7 @@ DEFAULT_CONFIG = [
         'abbreviation' : 'dw',
         'description' : 'Number of workers to load data.',
         'type' : int,
-        'default' : 0,
+        'default' : 2,
     },   
     {
         'name' : 'continuous_distribution_type',
@@ -139,7 +139,7 @@ DEFAULT_CONFIG = [
     },  
     {
         'name' : 'venv_algo',
-        'description' : 'Algorithm used in venv training. There are currently three algorithms to choose from, `bc` , `revive_p` and `revive_t`.',
+        'description' : 'Algorithm used in venv training. There are currently three algorithms to choose from, `bc` and `revive_p`.',
         'type' : str,
         'default' : 'revive_p',
         'doc': True,
@@ -194,7 +194,14 @@ DEFAULT_CONFIG = [
         'description' : 'How many steps between two histogram summary. 0 means disable.',
         'type' : int,
         'default' : 0,
-    },  
+    }, 
+    {
+        'name' : 'rollout_plt_frequency',
+        'abbreviation' : 'rpf',
+        'description' : 'How many steps between two plot rollout data. 0 means disable.',
+        'type' : int,
+        'default' : 50,
+    },   
 
     # policy related config
     {
@@ -269,6 +276,19 @@ DEFAULT_CONFIG = [
         "type": int,
         "default": 25000000000,
     },
+    {
+        "name" : "action_steps",
+        "description": "Use the action for some steps in env.",
+        "type" : int,
+        "default" : 1,
+        'doc': True,
+    }, 
+    {
+        "name" : "rollout_dataset_mode",
+        "description": "Select the rollout dataset. support `train` and `validate`",
+        "type" : str,
+        "default" : "train",
+    }, 
 
     # parameter tuning related config
     {

@@ -14,7 +14,7 @@ train_policy.json
 *.out
 ZOOpt
 data/*
-tests/data/*
+tests/data/*fix
 .aim/
 apex/
 BatchRL/

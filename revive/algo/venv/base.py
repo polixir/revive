@@ -26,19 +26,15 @@ from scipy import stats
 from loguru import logger
 from copy import deepcopy
 from ray import tune
+from ray import train
 from ray.tune import CLIReporter
-from ray.util.sgd.torch import TrainingOperator
-from ray.util.sgd.torch.constants import (SCHEDULER_STEP_EPOCH, NUM_STEPS,
-                                          SCHEDULER_STEP_BATCH, SCHEDULER_STEP)
-from ray.util.sgd.utils import (TimerCollection, AverageMeterCollection,
-                                NUM_SAMPLES)
-
+from ray.train.torch import TorchTrainer
 from revive.computation.graph import DesicionGraph
 from revive.computation.inference import *
 from revive.data.batch import Batch
 from revive.data.dataset import data_creator
-from revive.utils.raysgd_utils import ReviveTorchTrainer, TorchTrainer
-from revive.utils.tune_utils import TUNE_LOGGERS, CustomSearchGenerator, CustomBasicVariantGenerator
+from revive.utils.raysgd_utils import NUM_SAMPLES, AverageMeterCollection
+from revive.utils.tune_utils import get_tune_callbacks, CustomSearchGenerator, CustomBasicVariantGenerator
 from revive.utils.common_utils import *
 from revive.utils.auth_utils import customer_uploadTrainLog
 
@@ -70,7 +66,7 @@ def catch_error(func):
             }
     return wrapped_func
 
-class VenvOperator(TrainingOperator):
+class VenvOperator():
     r"""
     The base venv class.
     """
@@ -126,7 +122,7 @@ class VenvOperator(TrainingOperator):
             "progress_reporter": reporter,
             "reuse_actors": config["reuse_actors"],
             "local_dir": config["workspace"],
-            "loggers": TUNE_LOGGERS,
+            "callbacks": get_tune_callbacks(),
             "stop": {
                 "stop_flag": True
             },
@@ -151,7 +147,7 @@ class VenvOperator(TrainingOperator):
             tune_params['search_alg'] = CustomBasicVariantGenerator()
 
         elif _search_algo == 'zoopt':
-            from ray.tune.suggest.zoopt import ZOOptSearch
+            from ray.tune.search.zoopt import ZOOptSearch
             from zoopt import ValueType
 
             if config['parallel_num'] == 'auto':
@@ -186,7 +182,6 @@ class VenvOperator(TrainingOperator):
             }
 
             config["total_num_of_trials"] = config['train_venv_trials']
-
             tune_params['search_alg'] = ZOOptSearch(
                 algo="Asracos",  # only support Asracos currently
                 budget=config["total_num_of_trials"],
@@ -288,32 +283,23 @@ class VenvOperator(TrainingOperator):
 
         # register data loader for double venv training
         train_loader_train, val_loader_train, train_loader_val, val_loader_val = self.data_creator(config)
-        
-        self.register_data(train_loader=train_loader_train, validation_loader=val_loader_train)
-        self._train_loader_train = self._train_loader
-        self._val_loader_train = self._validation_loader
+        self._train_loader_train = train.torch.prepare_data_loader(train_loader_train, move_to_device=False)
+        self._val_loader_train = train.torch.prepare_data_loader(val_loader_train, move_to_device=False)
+        self._train_loader_val = train.torch.prepare_data_loader(train_loader_val, move_to_device=False)
+        self._val_loader_val = train.torch.prepare_data_loader(val_loader_val, move_to_device=False)
 
-        self.register_data(train_loader=train_loader_val, validation_loader=val_loader_val)
-        self._train_loader_val = self._train_loader
-        self._val_loader_val = self._validation_loader
+        self.train_models = self.model_creator(config, self.graph_train)
+        for model_index, model in enumerate(self.train_models):
+            self.train_models[model_index] = train.torch.prepare_model(model)
+        self.train_optimizers = self.optimizer_creator(self.train_models, config)
 
-        train_models = self.model_creator(config, self.graph_train)
-        train_optimizers = self.optimizer_creator(train_models, config)
-        val_models = self.model_creator(config, self.graph_val)
-        val_optimizers = self.optimizer_creator(val_models, config)
-
-        self.model_length = len(train_models)
-        self.optimizer_length = len(train_optimizers)
-
-        self.models, self.optimizers = self.register(models=(*train_models, *val_models), optimizers=(*train_optimizers, *val_optimizers))
-
-        self.train_models = self.models[:self.model_length]
-        self.train_optimizers = self.optimizers[:self.optimizer_length]
-        self.val_models = self.models[self.model_length:]
-        self.val_optimizers = self.optimizers[self.optimizer_length:]
+        self.val_models = self.model_creator(config, self.graph_val)
+        for model_index, model in enumerate(self.val_models):
+            self.val_models[model_index] = train.torch.prepare_model(model)
+        self.val_optimizers = self.optimizer_creator(self.val_models, config)
 
     @catch_error
-    def setup(self, config : dict):
+    def __init__(self, config : dict):
         r'''setup everything for training.
         
         Args:
@@ -321,6 +307,7 @@ class VenvOperator(TrainingOperator):
         
         '''
         # parse information from config
+        self.config = config
         self.train_dataset = ray.get(config['dataset'])
         self.val_dataset = ray.get(config['val_dataset'])
         self._data_buffer = config['venv_data_buffer']
@@ -371,6 +358,7 @@ class VenvOperator(TrainingOperator):
         self._wdist_ready_train = False
         self._wdist_ready_val = False
         self._wdist_ready = False
+        self._use_gpu = self.config["use_gpu"] and torch.cuda.is_available()
         self._device = 'cuda' if self._use_gpu else 'cpu' # fix problem introduced in ray 1.1
 
         if "shooting_" in self.config['venv_metric']:
@@ -419,12 +407,13 @@ class VenvOperator(TrainingOperator):
         self._save_models(self._traj_dir)
         self._update_metric()
 
-    def nan_in_grad(self, ):
+        self.global_step = 0
+
+    def nan_in_grad(self):
         if hasattr(self, "nums_nan_in_grad"):
             self.nums_nan_in_grad += 1
         else:
             self.nums_nan_in_grad = 1
-
         if self.nums_nan_in_grad > 100:
             self._stop_flag = True
             logger.warning(f'Find too many nan in loss. Early stop.')
@@ -604,6 +593,10 @@ class VenvOperator(TrainingOperator):
         new_data = Batch({name : expert_data[name] for name in graph.leaf})
         total_mse = 0
         for node_name in graph.keys():
+            if node_name + "_isnan_index_" in expert_data.keys():
+                isnan_index = 1 - torch.mean(expert_data[node_name + "_isnan_index_"]) 
+            else:
+                isnan_index = None
             if graph.get_node(node_name).node_type == 'network':
                 node_dist = graph.compute_node(node_name, new_data)
                 new_data[node_name] = node_dist.mode
@@ -611,14 +604,24 @@ class VenvOperator(TrainingOperator):
                 new_data[node_name] = graph.compute_node(node_name, new_data)
                 continue
             if node_name in graph.metric_nodes:
-                node_mse = ((new_data[node_name] - expert_data[node_name]) ** 2).sum(dim=-1).mean()
+                if isnan_index is not None:
+                    node_mse = (((new_data[node_name] - expert_data[node_name])*isnan_index) ** 2).sum(dim=-1).mean()
+                else:
+                    node_mse = ((new_data[node_name] - expert_data[node_name]) ** 2).sum(dim=-1).mean()
                 total_mse += node_mse.item()
                 info[f"{self.NAME}/{node_name}_one_step_mse_{scope}"] = node_mse.item()
         info[f"{self.NAME}/average_one_step_mse_{scope}"] = total_mse / self.total_dim
 
         mse_error = 0
         for node_name in graph.metric_nodes:
-            policy_rollout_mse = ((expert_data[node_name] - generated_data[node_name]) ** 2).sum(dim=-1).mean()
+            if node_name + "_isnan_index_" in expert_data.keys():
+                isnan_index = 1 - torch.mean(expert_data[node_name + "_isnan_index_"]) 
+            else:
+                isnan_index = None
+            if isnan_index is not None:
+                policy_rollout_mse = (((expert_data[node_name] - generated_data[node_name])*isnan_index) ** 2).sum(dim=-1).mean()
+            else:
+                policy_rollout_mse = ((expert_data[node_name] - generated_data[node_name]) ** 2).sum(dim=-1).mean()
             mse_error += policy_rollout_mse.item()
             info[f"{self.NAME}/{node_name}_rollout_mse_{scope}"] = policy_rollout_mse.item()
         info[f"{self.NAME}/average_rollout_mse_{scope}"] = mse_error / self.total_dim
@@ -645,13 +648,22 @@ class VenvOperator(TrainingOperator):
         new_data = Batch({name : expert_data[name] for name in graph.leaf})
         total_nll = 0
         for node_name in graph.keys():
+            if node_name + "_isnan_index_" in expert_data.keys():
+                isnan_index = 1 - torch.mean(expert_data[node_name + "_isnan_index_"],axis=-1) 
+            else:
+                isnan_index = None
+
             if node_name in graph.learnable_node_names and node_name in graph.metric_nodes:
                 node_dist = graph.compute_node(node_name, new_data)
                 new_data[node_name] = node_dist.mode
             else:
                 new_data[node_name] = expert_data[node_name]
                 continue
-            node_nll = - node_dist.log_prob(expert_data[node_name]).mean()
+
+            if isnan_index is not None:
+                node_nll = - (node_dist.log_prob(expert_data[node_name])*isnan_index).mean()
+            else:
+                node_nll = - node_dist.log_prob(expert_data[node_name]).mean()
             total_nll += node_nll.item()
             info[f"{self.NAME}/{node_name}_one_step_nll_{scope}"] = node_nll.item()
 
@@ -660,9 +672,16 @@ class VenvOperator(TrainingOperator):
 
         total_nll = 0
         for node_name in graph.metric_nodes:
+            if node_name + "_isnan_index_" in expert_data.keys():
+                isnan_index = 1 - expert_data[node_name + "_isnan_index_"] 
+            else:
+                isnan_index = None
             if node_name in graph.learnable_node_names:
                 node_dist = graph.compute_node(node_name, expert_data)
-                policy_nll = - node_dist.log_prob(expert_data[node_name]).mean()
+                if isnan_index is not None:
+                    policy_nll = - (node_dist.log_prob(expert_data[node_name]*isnan_index)).mean()
+                else:
+                    policy_nll = - node_dist.log_prob(expert_data[node_name]).mean()
                 total_nll += policy_nll.item()
                 info[f"{self.NAME}/{node_name}_rollout_nll_{scope}"] = policy_nll.item()
             else:
@@ -693,6 +712,11 @@ class VenvOperator(TrainingOperator):
         new_data = Batch({name : expert_data[name] for name in graph.leaf})
         total_mae = 0
         for node_name in graph.keys():
+            if node_name + "_isnan_index_" in expert_data.keys():
+                isnan_index = 1 - torch.mean(expert_data[node_name + "_isnan_index_"]) 
+            else:
+                isnan_index = None
+
             if graph.get_node(node_name).node_type == 'network':
                 node_dist = graph.compute_node(node_name, new_data)
                 new_data[node_name] = node_dist.mode
@@ -700,7 +724,10 @@ class VenvOperator(TrainingOperator):
                 new_data[node_name] = graph.compute_node(node_name, new_data)
                 continue
             if node_name in graph.metric_nodes:
-                node_mae = (new_data[node_name] - expert_data[node_name]).abs().sum(dim=-1).mean()
+                if isnan_index is not None:
+                    node_mae = ((new_data[node_name] - expert_data[node_name])*isnan_index).abs().sum(dim=-1).mean()
+                else:
+                    node_mae = (new_data[node_name] - expert_data[node_name]).abs().sum(dim=-1).mean()
                 total_mae += node_mae.item()
                 info[f"{self.NAME}/{node_name}_one_step_mae_{scope}"] = node_mae.item()
 
@@ -709,7 +736,14 @@ class VenvOperator(TrainingOperator):
         mae_error = 0
         for node_name in graph.keys():
             if node_name in graph.metric_nodes:
-                policy_shooting_error = torch.abs(expert_data[node_name] - generated_data[node_name]).sum(dim=-1).mean()
+                if node_name + "_isnan_index_" in expert_data.keys():
+                    isnan_index = 1 - torch.mean(expert_data[node_name + "_isnan_index_"]) 
+                else:
+                    isnan_index = None
+                if isnan_index is not None:
+                    policy_shooting_error = (torch.abs(expert_data[node_name] - generated_data[node_name])*isnan_index).sum(dim=-1).mean()
+                else:
+                    policy_shooting_error = torch.abs(expert_data[node_name] - generated_data[node_name]).sum(dim=-1).mean()
                 mae_error += policy_shooting_error.item()
                 info[f"{self.NAME}/{node_name}_rollout_mae_{scope}"] = policy_shooting_error.item()
 
@@ -740,7 +774,12 @@ class VenvOperator(TrainingOperator):
         wdist_error = []
         for node_name in graph.keys():
             if node_name in graph.metric_nodes:
+                # TODO: support isnan_index
                 node_dim = expert_data[node_name].shape[-1]
+                if node_name + "_isnan_index_" in expert_data.keys():
+                    isnan_index = 1 - torch.mean(expert_data[node_name + "_isnan_index_"],axis=-1) 
+                else:
+                    isnan_index = None
                 wdist = [stats.wasserstein_distance(expert_data[node_name].reshape(-1, expert_data[node_name].shape[-1])[..., dim].cpu().numpy(),
                                                     generated_data[node_name].reshape(-1, generated_data[node_name].shape[-1])[..., dim].cpu().numpy())
                                 for dim in range(node_dim)]
@@ -752,13 +791,13 @@ class VenvOperator(TrainingOperator):
         info[f"{self.NAME}/average_wdist_{scope}"] = np.sum(wdist_error) / self.total_dim
         return info
 
-    def train_epoch(self, iterator, info, **kwargs):
-        if info is None:
-            info = dict()
-            pass
-        
+    @catch_error
+    def train_epoch(self):
+        info = dict()
+ 
         r"""Define the training process for an epoch."""
         self._epoch_cnt += 1
+        logger.info(f"Train epoch : {self._epoch_cnt} ")
 
         # switch to training mode
         if hasattr(self, "model"):
@@ -798,10 +837,9 @@ class VenvOperator(TrainingOperator):
         return {k : info[k] for k in filter(lambda k: not k.startswith('last'), info.keys())}
 
     @catch_error
-    def validate(self, val_iterator, info):
-        if info is None:
-            info = dict()
-            pass
+    def validate(self):
+        logger.info(f"Epoch : {self._epoch_cnt} ")
+        info = dict()
         
         r"""Define the validate process after train one epoch."""
         if hasattr(self, "model"):
@@ -897,30 +935,39 @@ class VenvOperator(TrainingOperator):
 
         '''plot histogram when training is finished'''
         # [ OTHER ] more frequent valuation
-        if self._stop_flag or self._epoch_cnt % 10 == 1:
-            histogram_path = os.path.join(self._traj_dir, 'histogram')
-            if not os.path.exists(histogram_path):
-                os.makedirs(histogram_path)
-
-            try:
-                save_histogram(histogram_path, self.best_graph_train, self._train_loader_val, device=self._device, scope='train')
-                save_histogram(histogram_path, self.best_graph_val, self._val_loader_val, device=self._device, scope='val')
-
-                # save rolllout action image
-                rollout_save_path = os.path.join(self._traj_dir, 'rollout_images')
-                save_rollout_action(rollout_save_path, self.best_graph_train, self.device, self.train_dataset, self.nodes_map)
-                # [ OTHER ] not only plotting the best model, but also plotting the result of the current model
-                rollout_save_path = os.path.join(self._traj_dir, 'rollout_images_current')
-                save_rollout_action(rollout_save_path, self.graph_train, self.device, self.train_dataset, self.nodes_map)
-            except Exception as e:
-                logger.warning(e)
+        if self._stop_flag or self._epoch_cnt % self.config["rollout_plt_frequency"] == 0:
+            if self.config["rollout_plt_frequency"] > 0:
+                histogram_path = os.path.join(self._traj_dir, 'histogram')
+                if not os.path.exists(histogram_path):
+                    os.makedirs(histogram_path)
+                try:
+                    save_histogram(histogram_path, self.best_graph_train, self._train_loader_val, device=self._device, scope='train')
+                    save_histogram(histogram_path, self.best_graph_val, self._val_loader_val, device=self._device, scope='val')
+                    
+                    if self.config["rollout_dataset_mode"] == "validate":
+                        rollout_dataset = self.val_dataset
+                    else:
+                        rollout_dataset = self.train_dataset
+                    # save rolllout action image
+                    rollout_save_path = os.path.join(self._traj_dir, 'rollout_images')
+                    nodes_map = deepcopy(self.nodes_map)
+                    # del step_node
+                    if "step_node_" in nodes_map.keys():
+                        nodes_map.pop("step_node_")
+                    save_rollout_action(rollout_save_path, self.best_graph_train, self._device, rollout_dataset, deepcopy(nodes_map))
+                    # [ OTHER ] not only plotting the best model, but also plotting the result of the current model
+                    rollout_save_path = os.path.join(self._traj_dir, 'rollout_images_current')
+                    save_rollout_action(rollout_save_path, self.graph_train, self._device, rollout_dataset, deepcopy(nodes_map))
+                except Exception as e:
+                    logger.warning(e)
+            else:
+                logger.info("Don't plot images.")
 
         if self._epoch_cnt == 1:
             try:
                 info = self._load_checkpoint(info)
             except:
                 logger.info("Don't Load checkpoint!")
-            
             if hasattr(self, "_traj_dir_bak") and os.path.exists(self._traj_dir_bak):
                 shutil.rmtree(self._traj_dir_bak)
                 os.remove(self._filename_bak)
@@ -1062,11 +1109,11 @@ class VenvOperator(TrainingOperator):
 
 class VenvAlgorithm:
     ''' Class use to manage venv algorithms '''
-
-    def __init__(self, algo : str):
+    def __init__(self, algo : str, workspace: str =None):
         self.algo = algo
+        self.workspace = workspace
         if self.algo == "revive" or self.algo == "revive_p" or self.algo == "revivep" or self.algo == "revive_ppo":
-            self.algo = "revivep"
+            self.algo = "revive_p"
         elif self.algo == "revive_t" or self.algo == "revivet"  or self.algo == "revive_td3":
             self.algo = "revivet"
         elif self.algo == "bc":
@@ -1086,56 +1133,64 @@ class VenvAlgorithm:
             if 'Operator' in k and not k == 'VenvOperator':
                 self.operator = getattr(self.algo_module, k)
 
+        self.operator_config = {}
+
+    def get_train_func(self, config):
+        from revive.utils.tune_utils import VALID_SUMMARY_TYPES
+        from torch.utils.tensorboard import SummaryWriter
+        from ray.air import session
+
+        def train_func(config):
+            config.update(self.operator_config)
+            algo_operator = self.operator(config)
+            writer = SummaryWriter(algo_operator._traj_dir)
+            epoch = 0
+            while True:
+                train_stats = algo_operator.train_epoch()
+                val_stats = algo_operator.validate()
+                session.report({"mean_accuracy": algo_operator._acc,
+                                "least_metric": val_stats["least_metric"],
+                                "now_metric": val_stats["now_metric"],
+                                "stop_flag": val_stats["stop_flag"]})
+
+                # write tensorboard
+                for k, v in [*train_stats.items(), *val_stats.items()]:
+                    if type(v) in VALID_SUMMARY_TYPES:
+                        writer.add_scalar(k, v, global_step=epoch)
+                    elif isinstance(v, torch.Tensor):
+                        v = v.view(-1)
+                        writer.add_histogram(k, v, global_step=epoch)
+                writer.flush()
+                # check stop_flag
+                train_stats.update(val_stats)
+                if train_stats.get('stop_flag', False):
+                    break
+                epoch += 1
+
+        return train_func 
+
     def get_trainer(self, config):
-        try:  # if there is a custom function
-            _get_trainer = getattr(self.algo_module, 'get_trainer')
-            return _get_trainer(config)
-        except AttributeError:  # fallback to default
-            if config['is_crypto'] == 0:
-                return ReviveTorchTrainer(
-                    training_operator_cls=self.operator,
-                    num_workers=config['workers_per_trial'],
-                    config=config,
-                    use_gpu=config['use_gpu'],
-                    use_fp16=config['use_fp16'],
-                    num_gpus_per_worker=config['venv_gpus_per_worker'],
-                )
-            else:
-                warnings.warn('Use default Trainer.')
-                return TorchTrainer(
-                    training_operator_cls=self.operator,
-                    num_workers=config['workers_per_trial'],
-                    config=config,
-                    use_gpu=config['use_gpu'],
-                    use_fp16=config['use_fp16'],
-                )
+        try:
+            train_func = self.get_train_func(config)
+            from ray.air.config import ScalingConfig
+            trainer = TorchTrainer(
+                train_func,
+                train_loop_config=config,
+                scaling_config=ScalingConfig(num_workers=config['workers_per_trial'], use_gpu=config['use_gpu']),
+            )
+            return trainer 
         except Exception as e:
             logger.error('Detect Error: {}'.format(e))
             raise e
     
     def get_trainable(self, config):
-        try:  # if there is a custom function
-            _get_trainable = getattr(self.algo_module, 'get_trainable')
-            return _get_trainable(config)
-        except AttributeError:  # fallback to default
-            if config['is_crypto'] == 0:
-                return ReviveTorchTrainer.as_trainable(
-                    training_operator_cls=self.operator,
-                    num_workers=config['workers_per_trial'],
-                    config=config,
-                    use_gpu=config['use_gpu'],
-                    use_fp16=config['use_fp16'],
-                    num_gpus_per_worker=config['venv_gpus_per_worker'],
-                )
-            else:
-                warnings.warn('Use default Trainer.')
-                return TorchTrainer.as_trainable(
-                    training_operator_cls=self.operator,
-                    num_workers=config['workers_per_trial'],
-                    config=config,
-                    use_gpu=config['use_gpu'],
-                    use_fp16=config['use_fp16'],
-                )
+        try:
+            train_func = self.get_train_func(config)
+            from ray.train import Trainer
+            trainer = Trainer(backend="torch", num_workers=config['workers_per_trial'], use_gpu=config['use_gpu'])
+            trainable = trainer.to_tune_trainable(train_func)
+
+            return trainable 
         except Exception as e:
             logger.error('Detect Error: {}'.format(e))
             raise e
@@ -1151,6 +1206,7 @@ class VenvAlgorithm:
 
     def get_tune_parameters(self, config):
         try:
+            self.operator_config = config
             return self.operator.get_tune_parameters(config)
         except AttributeError:
             raise AttributeError("Custom algorithm need to implement `get_tune_parameters`")

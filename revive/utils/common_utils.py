@@ -16,7 +16,6 @@ import ot
 import os
 import ray
 import gym
-import json
 import h5py
 import torch
 import random
@@ -29,6 +28,8 @@ import multiprocessing
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+plt.switch_backend('Agg')
+
 from uuid import uuid1
 from sklearn import tree
 from cairosvg import svg2pdf
@@ -42,7 +43,6 @@ from functools import partial
 from torch.utils.data.dataloader import DataLoader
 from typing import Any, Dict, List
 
-import revive
 from revive.computation.graph import DesicionGraph
 from revive.computation.inference import *
 from revive.computation.utils import *
@@ -693,7 +693,7 @@ def save_rollout_action(rollout_save_path: str,
                         graph: DesicionGraph, 
                         device: str, 
                         dataset, 
-                        nodes,
+                        nodes_map,
                         horizion_num = 10):
     '''save the Trj rollout'''
     if not os.path.exists(rollout_save_path):
@@ -723,15 +723,31 @@ def save_rollout_action(rollout_save_path: str,
         generated_data.append(generated_batch)
         break
     
-    expert_data = {node_name : np.concatenate([batch[node_name] for batch in expert_data], axis=1)  for node_name in nodes.keys()}
-    generated_data = {node_name : np.concatenate([batch[node_name] for batch in generated_data], axis=1)  for node_name in nodes.keys()}
-
+    expert_data = {node_name : np.concatenate([batch[node_name] for batch in expert_data], axis=1)  for node_name in nodes_map.keys()}
+    generated_data = {node_name : np.concatenate([batch[node_name] for batch in generated_data], axis=1)  for node_name in nodes_map.keys()}
+    
+    # del ts_node in nodes_map
+    if graph.ts_nodes:
+        for ts_node,node in graph.ts_nodes.items():
+            if "next_" + ts_node in nodes_map.keys():
+                nodes_map.pop("next_" + ts_node)
+            if ts_node in nodes_map.keys():
+                if node in nodes_map.keys():
+                    expert_data.pop(ts_node)
+                    generated_data.pop(ts_node)
+                else:
+                    nodes_map[node] = [c[c.index("_")+1:]for c in nodes_map[ts_node][-len(nodes_map[ts_node])//graph.ts_node_frames[ts_node]:]]
+                    expert_data[node] = expert_data[ts_node][:,-len(nodes_map[node]):]
+                    generated_data[node] = generated_data[ts_node][:,-len(nodes_map[node]):]
+            if ts_node in nodes_map.keys():
+                nodes_map.pop(ts_node)
+    # #
     expert_data = processor.deprocess(expert_data)
     generated_data = processor.deprocess(generated_data)
 
     #select_indexs = np.random.choice(np.arange(expert_data[list(nodes.keys())[0]].shape[1]), size=10, replace=False)
 
-    for node_name,node_dims in nodes.items():
+    for node_name,node_dims in nodes_map.items():
         horizion_num = min(horizion_num, expert_data.shape[1])
         expert_action_data = expert_data[node_name]
         generated_action_data = generated_data[node_name]

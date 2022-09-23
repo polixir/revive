@@ -129,16 +129,16 @@ def check_license(cls):
             sys.PYARMOR_LICENSE = "/"
         
         try:
-            importlib.import_module(f'revive.algo.venv.revive')
-            logger.info(f"import revive.algo.venv.revive")
+            importlib.import_module(f'revive.algo.venv.revive_p')
+            logger.info(f"import revive.algo.venv.revive_p")
         except:
             if not isinstance(REVIVE_LICENSE, str):
                 logger.info(f"Don't find 'REVIVE_LICENSE' in environment variables.")
                 raise NotImplementedError
             else:
                 try:
-                    importlib.import_module(f'revive.dist.algo.venv.revive')
-                    logger.info(f"import revive.dist.algo.venv.revive")
+                    importlib.import_module(f'revive.dist.algo.venv.revive_p')
+                    logger.info(f"import revive.dist.algo.venv.revive_p")
                 except:
                     logger.info(f"Can't find local REVIVE_LICENSE file.")
                     raise NotImplementedError
@@ -238,5 +238,5 @@ def check_license(cls):
             logger.error(f"{result['code']}. Please check the ``~/.revive/config.yaml`` file for the configuration.")
             sys.exit() 
 
-        # importlib.import_module(f'revive.dist.algo.venv.ppo')
-        logger.info(f"Import encryption venv algorithm module -> ppo!")
+        importlib.import_module(f'revive.dist.algo.venv.revive_p')
+        logger.info(f"Import encryption venv algorithm module -> revive_p!")

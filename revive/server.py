@@ -12,23 +12,26 @@
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
     Lesser General Public License for more details.
 """
-
-import json
 import os
-import pickle
 import sys
+import json
 import uuid
+import socket
+import pickle
 import warnings
-from typing import Tuple
+
+from copy import deepcopy
+from typing import Dict, Union, Optional, Tuple
 
 import ray
+import numpy as np
 from loguru import logger
 
 from revive.utils.common_utils import get_reward_fn, list2parser, setup_seed
 from revive.computation.inference import PolicyModel, VirtualEnv, VirtualEnvDev
 from revive.conf.config import DEBUG_CONFIG, DEFAULT_CONFIG
 from revive.data.dataset import OfflineDataset
-from revive.utils.server_utils import *
+from revive.utils.server_utils import DataBufferEnv, DataBufferPolicy, DataBufferTuner, Logger, VenvTrain, TuneVenvTrain, PolicyTrain, TunePolicyTrain, ParameterTuner
 
 warnings.filterwarnings('ignore')
 
@@ -153,8 +156,6 @@ class ReviveServer:
                 json.dump(self.config,f)
 
         ''' preprocess config'''
-
-
         # NOTE: in crypto mode, each trail is fixed to use one GPU.
         self.config['is_crypto'] = os.environ.get('REVIVE_CRYPTO', 0)
         setup_seed(self.config['global_seed'])
@@ -163,11 +164,15 @@ class ReviveServer:
         self.policy_mode = policy_mode
         self.tuning_mode = tuning_mode
         self.tune_initial_state = tune_initial_state
+
+        self.reward_func = get_reward_fn(reward_file_path, dataset_desc_file_path)
+        self.config['user_func'] = self.reward_func
         
         ''' create dataset '''
         self.data_file = dataset_file_path
         self.config_file = dataset_desc_file_path
         self.val_file = val_file_path
+        
         self.dataset = OfflineDataset(self.data_file, self.config_file, self.config['ignore_check'])
         self._check_license()
         self.runtime_env = {"env_vars": {"PYTHONPATH":os.pathsep.join(sys.path), "PYARMOR_LICENSE": sys.PYARMOR_LICENSE}}
@@ -185,13 +190,10 @@ class ReviveServer:
         if not tuning_mode == 'None': assert len(self.dataset.graph.tunable) > 0, 'No tunable parameter detected, please check the config yaml!'
         
         self.config['learning_nodes_num'] = self.dataset.learning_nodes_num
-
-        self.reward_func = get_reward_fn(reward_file_path, self.config_file)
-        self.config['user_func'] = self.reward_func
         
         if target_policy_name is None:
             target_policy_name = list(self.config['graph'].keys())[0]
-            logger.info(f"target policy name [{target_policy_name}] is chosen as default")
+            logger.warning(f"Target policy name [{target_policy_name}] is chosen as default")
         self.config['target_policy_name'] = target_policy_name
 
         ''' save a copy of the base graph '''
@@ -199,10 +201,10 @@ class ReviveServer:
             pickle.dump(self.config['graph'], f)
 
         ''' setup data buffers '''
-        self.driver_ip = ray._private.services.get_node_ip_address()
-        self.venv_data_buffer = ray.remote(DataBufferEnv).options(resources={f"node:{self.driver_ip}" : 0.001}).remote(venv_max_num=self.config['num_venv_store'])
-        self.policy_data_buffer = ray.remote(DataBufferPolicy).options(resources={f"node:{self.driver_ip}" : 0.001}).remote()
-        self.tuner_data_buffer = ray.remote(DataBufferTuner).options(resources={f"node:{self.driver_ip}" : 0.001}).remote(self.tuning_mode, self.config['parameter_tuning_budget'])
+        self.driver_ip = socket.gethostbyname(socket.gethostname())
+        self.venv_data_buffer = ray.remote(DataBufferEnv).options(resources={}).remote(venv_max_num=self.config['num_venv_store'])
+        self.policy_data_buffer = ray.remote(DataBufferPolicy).options(resources={}).remote()
+        self.tuner_data_buffer = ray.remote(DataBufferTuner).options(resources={}).remote(self.tuning_mode, self.config['parameter_tuning_budget'])
         self.config['venv_data_buffer'] = self.venv_data_buffer
         self.config['policy_data_buffer'] = self.policy_data_buffer
         self.config['tuner_data_buffer'] = self.tuner_data_buffer

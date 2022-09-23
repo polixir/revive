@@ -1,10 +1,9 @@
-import os
-import sys
-import time
 import json
 import argparse
 
-from tempfile import TemporaryDirectory
+from io import StringIO
+from wurlitzer import pipes, STDOUT
+from pyarmor.pytransform import show_hd_info,pyarmor_init
 
 
 def get_machine_info(output="./machine_info.json", online=False):
@@ -17,16 +16,13 @@ def get_machine_info(output="./machine_info.json", online=False):
    
     """
     assert output.endswith(".json"), f"Machine info should be saved as a json file. -> {output}"
-    with TemporaryDirectory() as dirname:
-        py_path = os.path.join(dirname, "hdinfo.py")
-        with open(os.path.join(dirname, "hdinfo.py"), "w") as f:
-            f.writelines(["from pyarmor.pyarmor import main\n", "main(['hdinfo'])\n"])
-        res_path = os.path.join(dirname, "res.out")
-        
-        os.system("nohup "+sys.executable+" -u "+py_path+">"+res_path+"&")
-        time.sleep(1)
-        with open(res_path, "r") as f:
-            lines = f.readlines()
+
+    out = StringIO()
+    with pipes(stdout=out, stderr=STDOUT):
+        pyarmor_init()
+        show_hd_info()
+
+    lines = out.getvalue().split("\n")
 
     hd_info = {
         "harddisk" : [],
@@ -35,13 +31,13 @@ def get_machine_info(output="./machine_info.json", online=False):
     }
     for line in lines:
         if "default harddisk" in line:
-            hd_info["harddisk"].append(line[line.index('"')+1:-2])
+            hd_info["harddisk"].append(line[line.index('"')+1:-1])
 
         if "Default Mac address" in line:
-            hd_info["mac"].append(line[line.index('"')+1:-2])
+            hd_info["mac"].append(line[line.index('"')+1:-1])
 
         if "Ip address" in line:
-            hd_info["ip"].append(line[line.index('"')+1:-2])
+            hd_info["ip"].append(line[line.index('"')+1:-1])
             
     machine_info = {"hd_txt": lines,  "hd_info": hd_info}
 
@@ -57,12 +53,9 @@ def get_machine_info(output="./machine_info.json", online=False):
         json.dump(machine_info,f)
 
     
-
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='The file path where the machine information is saved.')
     parser.add_argument('-o', '--output', default="./machine_info.json", help="The file save path of machine information.")
 
     args = parser.parse_args()
-    get_machine_info(args.output)
+    print(get_machine_info(args.output , online=True))

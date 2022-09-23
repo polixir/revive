@@ -24,22 +24,17 @@ import numpy as np
 from ray import tune
 from loguru import logger
 from copy import deepcopy
-
-from ray.tune import Stopper, CLIReporter
-
-from ray.util.sgd.torch import TrainingOperator
-from ray.util.sgd.torch.constants import (SCHEDULER_STEP_EPOCH, NUM_STEPS,
-                                          SCHEDULER_STEP_BATCH, SCHEDULER_STEP)
-from ray.util.sgd.utils import (TimerCollection, AverageMeterCollection,
-                                NUM_SAMPLES)
-
+from ray import train
+from ray.tune import CLIReporter
+from ray.train.torch import TorchTrainer
+from revive.utils.raysgd_utils import NUM_SAMPLES, AverageMeterCollection
 from revive.computation.inference import *
 from revive.computation.graph import FunctionDecisionNode
 from revive.data.batch import Batch
 from revive.data.dataset import data_creator
-from revive.utils.raysgd_utils import ReviveTorchTrainer, TorchTrainer
+from ray.train.torch import TorchTrainer
 from revive.utils.common_utils import *
-from revive.utils.tune_utils import TUNE_LOGGERS, CustomSearchGenerator, CustomBasicVariantGenerator
+from revive.utils.tune_utils import get_tune_callbacks, CustomSearchGenerator, CustomBasicVariantGenerator
 from revive.utils.auth_utils import customer_uploadTrainLog
 
 warnings.filterwarnings('ignore')
@@ -69,7 +64,7 @@ def catch_error(func):
             }
     return wrapped_func
 
-class PolicyOperator(TrainingOperator):
+class PolicyOperator():
 
     @property
     def env(self):
@@ -136,7 +131,7 @@ class PolicyOperator(TrainingOperator):
             "progress_reporter": reporter,
             "reuse_actors": config["reuse_actors"],
             "local_dir": config["workspace"],
-            "loggers": TUNE_LOGGERS,
+            "callbacks": get_tune_callbacks(),
             "stop": {
                 "stop_flag": True
             },
@@ -159,7 +154,7 @@ class PolicyOperator(TrainingOperator):
             tune_params['search_alg'] = CustomBasicVariantGenerator()
 
         elif _search_algo == 'zoopt':
-            from ray.tune.suggest.zoopt import ZOOptSearch
+            from ray.tune.search.zoopt import ZOOptSearch
             from zoopt import ValueType
 
             if config['parallel_num'] == 'auto':
@@ -222,7 +217,7 @@ class PolicyOperator(TrainingOperator):
             tune_params['search_alg'] = CustomBasicVariantGenerator()
 
         elif 'bayes' in _search_algo:
-            from ray.tune.suggest.bayesopt import BayesOptSearch
+            from ray.tune.search.bayesopt import BayesOptSearch
             bayes_search_space = {}
 
             for description in cls.PARAMETER_DESCRIPTION:
@@ -291,33 +286,27 @@ class PolicyOperator(TrainingOperator):
         self.val_dataset = ray.get(config['val_dataset'])
         if not self.double_validation:
             train_loader_train, val_loader_val = self.data_creator(config)
-            self.register_data(train_loader=train_loader_train, validation_loader=val_loader_val)
-            self._train_loader_train = self._train_loader
-            self._val_loader_val = self._validation_loader
+            self._train_loader_train = train.torch.prepare_data_loader(train_loader_train, move_to_device=False)
+            self._val_loader_train = train.torch.prepare_data_loader(val_loader_train, move_to_device=False)
             self._train_loader_val = None
-            self._val_loader_train = None
+            self._val_loader_val = None
         else:
             train_loader_train, val_loader_train, train_loader_val, val_loader_val = self.data_creator(config)
-        
-            self.register_data(train_loader=train_loader_train, validation_loader=val_loader_train)
-            self._train_loader_train = self._train_loader
-            self._val_loader_train = self._validation_loader
-
-            self.register_data(train_loader=train_loader_val, validation_loader=val_loader_val)
-            self._train_loader_val = self._train_loader
-            self._val_loader_val = self._validation_loader
+            self._train_loader_train = train.torch.prepare_data_loader(train_loader_train, move_to_device=False)
+            self._val_loader_train = train.torch.prepare_data_loader(val_loader_train, move_to_device=False)
+            self._train_loader_val = train.torch.prepare_data_loader(train_loader_val, move_to_device=False)
+            self._val_loader_val = train.torch.prepare_data_loader(val_loader_val, move_to_device=False)
 
     def _setup_models(self, config : Dict[str, Any]):
         r'''setup models, optimizers and dataloaders.'''
         if not self.double_validation:
             self.train_nodes = {policy_name:deepcopy(self._graph.get_node(policy_name)) for policy_name in self.policy_name}
             
-            models = self.model_creator(config, self.train_nodes)
-            optimizers = self.optimizer_creator(models, config)
-            self.models, self.optimizers = self.register(models=(models), optimizers=(optimizers))
+            self.train_models = self.model_creator(config, self.train_nodes)
+            for model_index, model in enumerate(self.train_models):
+                self.train_models[model_index] = train.torch.prepare_model(model)
+            self.train_optimizers = self.optimizer_creator(self.train_models, config)
 
-            self.train_models = self.models
-            self.train_optimizers = self.optimizers
             self.val_models = None
             self.val_optimizers = None
             
@@ -325,21 +314,17 @@ class PolicyOperator(TrainingOperator):
                 train_node.set_network(policy)
         else:
             self.train_nodes = {policy_name:deepcopy(self._graph.get_node(policy_name)) for policy_name in self.policy_name}
-            train_models = self.model_creator(config, self.train_nodes)
-            train_optimizers = self.optimizer_creator(train_models, config)
+            self.train_models = self.model_creator(config, self.train_nodes)
+            for model_index, model in enumerate(self.train_models):
+                self.train_models[model_index] = train.torch.prepare_model(model)
+            self.train_optimizers = self.optimizer_creator(self.train_models, config)
+
+
             self.val_nodes = {policy_name:deepcopy(self._graph.get_node(policy_name)) for policy_name in self.policy_name}
-            val_models = self.model_creator(config, self.val_nodes)
-            val_optimizers = self.optimizer_creator(val_models, config)
-
-            self.model_length = len(train_models)
-            self.optimizer_length = len(train_optimizers)
-
-            self.models, self.optimizers = self.register(models=(*train_models, *val_models), optimizers=(*train_optimizers, *val_optimizers))
-
-            self.train_models = self.models[:self.model_length]
-            self.train_optimizers = self.optimizers[:self.optimizer_length]
-            self.val_models = self.models[self.model_length:]
-            self.val_optimizers = self.optimizers[self.optimizer_length:]
+            self.val_models = self.model_creator(config, self.val_nodes)
+            for model_index, model in enumerate(self.val_models):
+                self.val_models[model_index] = train.torch.prepare_model(model)
+            self.val_optimizers = self.optimizer_creator(self.val_models, config)
 
             for train_node,policy in zip(self.train_nodes.values(), self.policy):
                 train_node.set_network(policy)
@@ -347,9 +332,10 @@ class PolicyOperator(TrainingOperator):
                 val_node.set_network(policy)
 
     @catch_error
-    def setup(self, config : Dict[str, Any]):
+    def __init__(self, config : Dict[str, Any]):
         '''setup everything for training'''
         # parse information from config
+        self.config = config
         self._data_buffer = config['policy_data_buffer']
         self._workspace = config["workspace"]
         self._user_func = config['user_func']
@@ -397,13 +383,14 @@ class PolicyOperator(TrainingOperator):
         self._batch_cnt = 0
         self._epoch_cnt = 0
         self._max_reward = - np.inf
+        self._use_gpu = self.config["use_gpu"] and torch.cuda.is_available()
         self._device = 'cuda' if self._use_gpu else 'cpu' # fix problem introduced in ray 1.1
 
         # collect venv
         env = ray.get(config['venv_data_buffer'].get_best_venv.remote())
         self.envs = env.env_list
         for env in self.envs:
-            env.to(self.device)
+            env.to(self._device)
             env.requires_grad_(False)
             env.set_target_policy_name(self.policy_name)
 
@@ -461,6 +448,8 @@ class PolicyOperator(TrainingOperator):
                 node_dims.append(list(node_dim.keys())[0])
             self.nodes_map[node_name] = node_dims
 
+        self.global_step = 0
+
 
     def _early_stop(self, info : Dict[str, Any]):
         info["stop_flag"] = self._stop_flag
@@ -476,7 +465,7 @@ class PolicyOperator(TrainingOperator):
         if self._max_reward == ray.get(self._data_buffer.get_max_reward.remote()):
             self._save_models(self._workspace, with_policy=False)
 
-    def _wrap_policy(self, policys : List[torch.nn.Module,], device: [str, Any] = None) -> PolicyModelDev:
+    def _wrap_policy(self, policys : List[torch.nn.Module,], device = None) -> PolicyModelDev:
         policy_nodes = deepcopy(self.behaviour_nodes)
         policys = deepcopy(policys)
         for policy_node,policy in zip(policy_nodes,policys):
@@ -612,6 +601,22 @@ class PolicyOperator(TrainingOperator):
         generated_data = generate_rewards(generated_data, reward_fn=lambda \
                 data: self._user_func(self._get_original_actions(data)))
 
+        # If use the action for multi-steps in env.
+        if self.config["action_steps"] >= 2:
+            index = torch.arange(0,generated_data["reward"].shape[0],self.config["action_steps"])
+            actions_step_data = Batch()
+            for k,v in generated_data.items():
+                if k == "reward":
+                    continue
+                actions_step_data[k] = v[index]
+                
+            import math
+            reward = generated_data["reward"]
+            reward_pad_steps = math.ceil(reward.shape[0] / self.config["action_steps"]) * self.config["action_steps"]  - reward.shape[0]
+            reward_pad = torch.cat([reward, reward[-1:].repeat(reward_pad_steps,1,1)],axis=0)
+            actions_step_data["reward"] = reward_pad.reshape(self.config["action_steps"], -1, reward_pad.shape[1], reward_pad.shape[2]).mean(axis=0)
+            generated_data = actions_step_data
+
         info = {
             "reward": generated_data.reward.mean().item()
         }
@@ -677,12 +682,19 @@ class PolicyOperator(TrainingOperator):
                 policy_input = get_input_from_graph(self._graph, policy_name, current_batch)
                 if 'offlinerl' in str(type(target_policy[policy_index])):
                     action = target_policy[policy_index](policy_input)
+                    current_batch[policy_name] = action
                 else:
-                    action_dist = target_policy[policy_index](policy_input)
-                    action = sample_fn(action_dist)
-                    action_log_prob = (action_dist.log_prob(action).unsqueeze(dim=-1)).detach()
-                    current_batch[policy_name + '_log_prob'] = action_log_prob
-                current_batch[policy_name] = action
+                    # use policy infer
+                    if i % self.config["action_steps"] == 0:
+                        action_dist = target_policy[policy_index](policy_input)
+                        action = sample_fn(action_dist)
+                        action_log_prob = (action_dist.log_prob(action).unsqueeze(dim=-1)).detach()
+                        current_batch[policy_name + '_log_prob'] = action_log_prob
+                        current_batch[policy_name] = action
+                    # use the last step action
+                    else:
+                        current_batch[policy_name + '_log_prob'] = action_log_prob
+                        current_batch[policy_name] = deepcopy(action.detach())    
 
                 if isinstance(env, list):
                     result_batch = []
@@ -708,7 +720,9 @@ class PolicyOperator(TrainingOperator):
 
         return generated_data
 
-    def train_epoch(self, iterator, info, **kwargs):
+    @catch_error
+    def train_epoch(self):
+        info = dict()
         self._epoch_cnt += 1
 
         if hasattr(self, "model"):
@@ -764,11 +778,9 @@ class PolicyOperator(TrainingOperator):
         return {k : info[k] for k in filter(lambda k: not k.startswith('last'), info.keys())}
 
     @catch_error
-    def validate(self, val_iterator, info):
-        if info is None:
-            info = dict()
-            pass
-        
+    def validate(self):
+        logger.info(f"Epoch : {self._epoch_cnt} ")
+        info = dict()        
         # switch to evaluate mode
         if hasattr(self, "model"):
             self.model.eval()
@@ -849,6 +861,7 @@ class PolicyOperator(TrainingOperator):
             self._save_models(self._traj_dir)
             self._update_metric()
 
+        info["stop_flag"] = self._stop_flag
         if self._stop_flag:
             # revive online server
             try:
@@ -874,11 +887,11 @@ class PolicyOperator(TrainingOperator):
 
             # save rolllout action image
             rollout_save_path = os.path.join(self._traj_dir, 'rollout_images')
-            save_rollout_action(rollout_save_path, graph, self.device, self.train_dataset, self.nodes_map)
+            save_rollout_action(rollout_save_path, graph, self._device, self.train_dataset, self.nodes_map)
 
             # policy to tree and plot the tree
             tree_save_path = os.path.join(self._traj_dir, 'policy_tree')
-            net_to_tree(tree_save_path, graph, self.device, self.train_dataset, self.action_dims )
+            net_to_tree(tree_save_path, graph, self._device, self.train_dataset, self.action_dims )
 
         return info
 
@@ -898,8 +911,9 @@ class PolicyOperator(TrainingOperator):
 
 
 class PolicyAlgorithm:
-    def __init__(self, algo : str):
+    def __init__(self, algo : str, workspace: str =None):
         self.algo = algo
+        self.workspace = workspace
         try:
             self.algo_module = importlib.import_module(f'revive.dist.algo.policy.{self.algo.split(".")[0]}')
             logger.info(f"Import encryption policy algorithm module -> {self.algo}!")
@@ -912,63 +926,68 @@ class PolicyAlgorithm:
             if 'Operator' in k and not k == 'PolicyOperator':
                 self.operator = getattr(self.algo_module, k)
 
+        self.operator_config = {}
+
+    def get_train_func(self, config):
+        from revive.utils.tune_utils import VALID_SUMMARY_TYPES
+        from torch.utils.tensorboard import SummaryWriter
+        from ray.air import session
+        def train_func(config):
+            config.update(self.operator_config)
+            algo_operator = self.operator(config)
+            writer = SummaryWriter(algo_operator._traj_dir)
+            epoch = 0
+            while True:
+                train_stats = algo_operator.train_epoch()
+                val_stats = algo_operator.validate()
+                session.report({"mean_accuracy": algo_operator._max_reward,
+                                "reward_trainPolicy_on_valEnv": val_stats["reward_trainPolicy_on_valEnv"],
+                                "stop_flag": val_stats["stop_flag"]})
+                # write tensorboard
+                for k, v in [*train_stats.items(), *val_stats.items()]:
+                    if type(v) in VALID_SUMMARY_TYPES:
+                        writer.add_scalar(k, v, global_step=epoch)
+                    elif isinstance(v, torch.Tensor):
+                        v = v.view(-1)
+                        writer.add_histogram(k, v, global_step=epoch)
+                writer.flush()
+                # check stop_flag
+                train_stats.update(val_stats)
+                if train_stats.get('stop_flag', False):
+                    break
+                epoch += 1
+
+        return train_func 
+
     def get_trainer(self, config):
-        config['algo'] = self.algo
-        try:  # if there is a custom function
-            _get_trainer = getattr(self.algo_module, 'get_trainer')
-            return _get_trainer(config)
-        except AttributeError:  # fallback to default
-            if config['is_crypto'] == 0:
-                return ReviveTorchTrainer(
-                    training_operator_cls=self.operator,
-                    num_workers=config['workers_per_trial'],
-                    config=config,
-                    use_gpu=config['use_gpu'],
-                    use_fp16=config['use_fp16'],
-                    num_gpus_per_worker=config['policy_gpus_per_worker'],
-                )
-            else:
-                return TorchTrainer(
-                    training_operator_cls=self.operator,
-                    num_workers=config['workers_per_trial'],
-                    config=config,
-                    use_gpu=config['use_gpu'],
-                    use_fp16=config['use_fp16'],
-                )
+        try:
+            train_func = self.get_train_func(config)
+            from ray.air.config import ScalingConfig
+            trainer = TorchTrainer(
+                train_func,
+                train_loop_config=config,
+                scaling_config=ScalingConfig(num_workers=config['workers_per_trial'], use_gpu=config['use_gpu']),
+            )
+            return trainer 
         except Exception as e:
             logger.error('Detect Error: {}'.format(e))
             raise e
     
     def get_trainable(self, config):
-        config['algo'] = self.algo
-        try:  # if there is a custom function
-            _get_trainable = getattr(self.algo_module, 'get_trainable')
-            return _get_trainable(config)
-        except AttributeError:  # fallback to default
-            if config['is_crypto'] == 0:
-                return ReviveTorchTrainer.as_trainable(
-                    training_operator_cls=self.operator,
-                    num_workers=config['workers_per_trial'],
-                    config=config,
-                    use_gpu=config['use_gpu'],
-                    use_fp16=config['use_fp16'],
-                    num_gpus_per_worker=config['policy_gpus_per_worker'],
-                )
-            else:
-                return TorchTrainer.as_trainable(
-                    training_operator_cls=self.operator,
-                    num_workers=config['workers_per_trial'],
-                    config=config,
-                    use_gpu=config['use_gpu'],
-                    use_fp16=config['use_fp16'],
-                )          
+        try:
+            train_func = self.get_train_func(config)
+            from ray.train import Trainer
+            trainer = Trainer(backend="torch", num_workers=config['workers_per_trial'], use_gpu=config['use_gpu'])
+            trainable = trainer.to_tune_trainable(train_func)
+
+            return trainable 
         except Exception as e:
             logger.error('Detect Error: {}'.format(e))
             raise e
 
     def get_parameters(self, command=None):
         try:
-            return self.operator.get_parameters(command, algo=self.algo)
+            return self.operator.get_parameters(command)
         except AttributeError:
             raise AttributeError("Custom algorithm need to implement `get_parameters`")
         except Exception as e:
@@ -977,7 +996,8 @@ class PolicyAlgorithm:
 
     def get_tune_parameters(self, config):
         try:
-            return self.operator.get_tune_parameters(config, algo=self.algo)
+            self.operator_config = config
+            return self.operator.get_tune_parameters(config)
         except AttributeError:
             raise AttributeError("Custom algorithm need to implement `get_tune_parameters`")
         except Exception as e:

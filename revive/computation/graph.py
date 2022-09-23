@@ -109,7 +109,7 @@ class DesicionNode:
         for name, description in zip(self.input_names, self.input_descriptions):
             demo_inputs[name] = torch.randn(len(description), dtype=torch.float32)
         
-        torch.onnx.export(ExportHelper(), demo_inputs, onnx_file, verbose=verbose, input_names=self.input_names, output_names=[self.name], opset_version=11)
+        torch.onnx.export(ExportHelper(), (demo_inputs,{}), onnx_file, verbose=verbose, input_names=self.input_names, output_names=[self.name], opset_version=11)
 
     def __str__(self) -> str:
         info = []
@@ -623,4 +623,5 @@ class DesicionGraph:
             description = self.descriptions[name]
             demo_inputs[name] = torch.randn(len(description), dtype=torch.float32)
         
-        torch.onnx.export(ExportHelper(), demo_inputs, onnx_file, verbose=verbose, input_names=self.leaf, output_names=list(self.nodes.keys()), opset_version=11)
+
+        torch.onnx.export(ExportHelper(), (demo_inputs,{}), onnx_file, verbose=verbose, input_names=self.leaf, output_names=list(self.nodes.keys()), opset_version=11)

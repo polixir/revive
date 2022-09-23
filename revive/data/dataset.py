@@ -21,14 +21,17 @@ import warnings
 from copy import deepcopy
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple, Union
+from matplotlib.pyplot import step
 
 import numpy as np
+import pandas as pd
 import ray
 import revive
 import torch
 import yaml
 from loguru import logger
-from ray.util.sgd.utils import BATCH_SIZE
+#from revive.utils.raysgd_utils import BATCH_SIZE
+BATCH_SIZE = "*batch_size"
 from revive.computation.funs_parser import parser
 from revive.computation.graph import *
 from revive.data.batch import Batch
@@ -49,19 +52,26 @@ class OfflineDataset(torch.utils.data.Dataset):
     def __init__(self, data_file : str,
                        config_file : str,
                        ignore_check : bool = False,
-                       horizon : int = None):
+                       horizon : int = None,
+                       reward_func = None):
         self.data_file = data_file
         self.config_file = config_file
         self.ignore_check = ignore_check
+        self.reward_func = reward_func
 
         self._raw_data = None
         self._raw_config = None
         self._pre_data(self.config_file, self.data_file)
         self._load_config(self.config_file)
         self._load_data(self.data_file)
+
+        self.graph.ts_nodes = self.ts_nodes
+        self.graph.ts_node_frames = self.ts_node_frames
         
         # pop up unused keys
         used_keys = list(self.graph.keys()) + self.graph.leaf + ['done']
+        used_keys += list(self.ts_nodes.values())
+        used_keys += list([key for key in self.data.keys() if key.endswith("_isnan_index_")])
         for key in list(self.data.keys()):
             if key not in used_keys:
                 try:
@@ -97,6 +107,11 @@ class OfflineDataset(torch.utils.data.Dataset):
         # by default, dataset is in trajectory mode
         self.trajectory_mode_(horizon)
 
+        if self.reward_func is not None:
+            self.data.to_torch()
+            self.data["_data_reward_"] = to_numpy(self.reward_func(self.data))
+            self.data.to_numpy()
+
     def _pre_data(self, config_file, data_file):
         # parse ts_nodes
         with open(config_file, 'r', encoding='UTF-8') as f:
@@ -105,8 +120,37 @@ class OfflineDataset(torch.utils.data.Dataset):
 
         graph_dict = raw_config['metadata'].get('graph', None)
         nodes_config = raw_config['metadata'].get('nodes', None)
+        self.ts_nodes = {}
+        self.ts_node_frames = {}
 
         if nodes_config:
+            ############################ append step node ############################
+            step_node_config = {k:v["step_input"] for k,v in nodes_config.items() if "step_input" in v.keys() }
+            if step_node_config:
+                assert "step_node_" not in raw_data.keys()
+                trj_index = [0,] + list(raw_data["index"])
+                step_node_data_list = []
+                for trj_start_index, trj_end_index in zip(trj_index[:-1], trj_index[1:]):
+                    step_node_data_list.append(np.arange(trj_start_index, trj_end_index-trj_start_index).reshape(-1,1))
+                step_node_data = np.concatenate(step_node_data_list,axis=0)
+                raw_data["step_node_"] = step_node_data
+                raw_config['metadata']['columns'] += [{'step_node_': {'dim': 'step_node_', 'type': 'continuous'}},]
+
+                use_step_node = False
+                for node, step_node_flag in step_node_config.items():
+                    if node not in graph_dict.keys():
+                        continue 
+                    if step_node_flag:
+                        logger.info(f"Append step_node data as the {node} node's input.")
+                        graph_dict[node] = graph_dict[node] + ["step_node_",]
+                        use_step_node = True 
+                # append step_node_function
+                if use_step_node:
+                    expert_functions = raw_config['metadata'].get('expert_functions',{})
+                    shutil.copyfile(os.path.join(os.path.dirname(revive.__file__),"./common/step_node_function.py"),  os.path.join(os.path.dirname(self.config_file), "./step_node_function.py"))
+                    expert_functions["step_node_"] = {"node_function": "step_node_function.get_next_step_node"}
+                    
+            ############################ append ts ###################################
             # collect nodes config
             ts_frames_config = {"ts_"+k:v["ts"] for k,v in nodes_config.items() if "ts" in v.keys()}
             ts_frames_config = {k:v for k,v in ts_frames_config.items() if v > 1}
@@ -128,6 +172,7 @@ class OfflineDataset(torch.utils.data.Dataset):
                 if node not in raw_data.keys():
                     logger.error(f"Can't find '{node}' node data.")
                     sys.exit()
+            self.ts_nodes = ts_nodes
             
             # ts_node npz data
             trj_index = [0,] + list(raw_data["index"])
@@ -139,6 +184,7 @@ class OfflineDataset(torch.utils.data.Dataset):
                 i += 1
                 for ts_node,node in ts_nodes.items():
                     ts_node_frames = ts_frames_config[ts_node]
+                    self.ts_node_frames[ts_node] = ts_node_frames
                     pad_data = np.concatenate([np.repeat(raw_data[node][trj_start_index:trj_start_index+1],repeats=ts_node_frames-1,axis=0), raw_data[node][trj_start_index:trj_end_index]])
                     new_data[ts_node].append(np.concatenate([pad_data[i:i+(trj_end_index-trj_start_index)] for i in range(ts_node_frames)], axis=1))
             new_data = {k:np.concatenate(v,axis=0) for k,v in new_data.items()}
@@ -150,18 +196,21 @@ class OfflineDataset(torch.utils.data.Dataset):
                 node_columns = [c for c in raw_config['metadata']['columns'] if list(c.values())[0]["dim"] == node]
                 ts_node_columns = []
                 ts_index = 0
-                for _ in range(ts_node_frames):
+                for ts_index in range(ts_node_frames):
                     for node_column in node_columns:
                         node_column_value = deepcopy(list(node_column.values())[0])
+                        node_column_name = deepcopy(list(node_column.keys())[0])
                         node_column_value["dim"] = ts_node
-                        ts_node_columns.append({ts_node+"_"+str(ts_index):node_column_value})
-                        ts_index += 1
+                        if ts_index+1 < ts_node_frames:
+                            node_column_value["fit"] = False
+                        ts_node_columns.append({"ts-"+str(ts_index)+"_"+node_column_name:node_column_value})
             
                 raw_config['metadata']['columns'] += ts_node_columns
             
             self._raw_config = raw_config
             self._raw_data = raw_data
-            np.savez_compressed("test_ts.npz",**raw_data)
+
+            ##################################################################
 
     def _check_data(self):
         '''check if the data format is correct'''
@@ -289,7 +338,10 @@ class OfflineDataset(torch.utils.data.Dataset):
             raw_data = self._raw_data
         else:
             raw_data = load_data(data_file)
-
+        
+        # logger.error("This is for devlop. Please delete it.")
+        # nan_index = np.random.choice(raw_data["temperature"].shape[0], size=500)
+        # raw_data["temperature"][nan_index] = np.nan
 
         # make sure data is in float32
         for k, v in raw_data.items():
@@ -366,7 +418,20 @@ class OfflineDataset(torch.utils.data.Dataset):
             self._min_length -= 1
             self._max_length -= 1
             self.data = Batch(new_data)   
-
+        
+        # append mask index for nan value
+        self.nan_isin_data = False
+        for key in list(self.data.keys()):
+            isnan_index = np.isnan(self.data[key]).astype(np.float32) 
+            if np.sum(isnan_index) > 0.5:
+                logger.warning(f"Find nan value in {key} node data. Auto set the ignore_check=True.")
+                self.data[key+"_isnan_index_"] = isnan_index
+                df = pd.DataFrame(self.data[key])
+                df.fillna(method="bfill", inplace=True)
+                df.fillna(method="ffill", inplace=True)
+                self.data[key] = df.values
+                self.ignore_check = True
+                self.nan_isin_data = True
         return self.data
     
     # NOTE: mode should be set before create dataloader
@@ -415,6 +480,7 @@ class OfflineDataset(torch.utils.data.Dataset):
             logger.warning(f'Warning: the min length of dataset is {self.min_length}, which is less than the horzion {horizon} you require. ' + \
                           f'Fallback to use horzion = {self.min_length}.')
         self.horizon = min(horizon, self.min_length)
+        logger.info(f"Set trajectory horizon : {self.horizon}")
 
     def get_dist_configs(self, model_config):
         r'''
@@ -725,11 +791,20 @@ class OfflineDataset(torch.utils.data.Dataset):
                 # for tunable, data in self.tunable_data.items():
                 #     tunable_data[tunable] = data[traj_index][np.newaxis].repeat(self.horizon, axis=0)
                 # raw_data.update(tunable_data)
+            # TODO: Update
+            # Skip nan in start index data
+            if self.nan_isin_data:
+                for node in self.graph.get_leaf():
+                    if node + "_isnan_index_" in raw_data.keys():
+                        if np.sum(raw_data[node + "_isnan_index_"][:1]) > 0.5:
+                            return self.__getitem__(np.random.choice(np.arange(self.__len__())))
+            
         elif self.mode == 'transition':
             raw_data = self.data[index]
             if self.tunable_data is not None:
                 traj_index = self._find_trajectory(index)
                 raw_data.update(self.tunable_data[traj_index])
+
         if raw:
             return raw_data
         return self.processor.process(raw_data)

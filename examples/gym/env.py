@@ -63,16 +63,16 @@ class ReviveEnv:
         # get action inputs
         if kwargs:
             self.state = self.state.update(kwargs)
-        pre_infer_result = self.env.infer_one_step(self.state)
+        pre_infer_result = self.env.infer_one_step(deepcopy(self.state))
         state = deepcopy(self.state)
         for node_name in self.graph.keys():
             if node_name == self.action_node:
-                continue
+                break
             else:
                 state[node_name] = pre_infer_result[node_name]
         # use action in env 
         state[self.action_node] = actions
-        infer_result = self.env.infer_one_step(state)
+        infer_result = self.env.infer_one_step(deepcopy(state))
 
         # get next step state
         self.state = self.graph.state_transition(infer_result)
@@ -92,7 +92,7 @@ if __name__ == "__main__":
     import numpy as np
     from revive.utils.common_utils import load_data
     
-    env = ReviveEnv("./env.pkl","act", "../../data/test_reward.py", "../../data/test.yaml")
+    env = ReviveEnv("/home/ubuntu/gaosongyi/revive/logs/test_1/env.pkl","act", "../../data/test_reward.py", "../../data/test.yaml")
     data = load_data("../../data/test.npz")
     state = {"obs":data["obs"][:10,:]}
     env.reset(state)

@@ -23,3 +23,5 @@ metadata:
   nodes:   
     temperature:
       ts: 5
+    action:
+      step_input: True

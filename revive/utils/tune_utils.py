@@ -15,14 +15,17 @@
 import os
 import json
 import torch
+import numpy as np
 from typing import Dict
 from collections import defaultdict
 from torch.utils.tensorboard import SummaryWriter
-from ray.tune.logger import Logger, CSVLogger, JsonLogger, VALID_SUMMARY_TYPES
+from ray.tune.logger import LoggerCallback, CSVLoggerCallback, JsonLoggerCallback
 from ray.tune.utils import flatten_dict
 from ray.tune.error import TuneError
 from ray.tune import Stopper
 
+
+VALID_SUMMARY_TYPES = [int, float, np.float32, np.float64, np.int32, np.int64]
 
 class SysStopper(Stopper):
     def __init__(self, workspace, max_iter: int = 0, stop_callback = None):
@@ -54,7 +57,7 @@ class SysStopper(Stopper):
         else:
             return False
 
-class TuneTBLogger(Logger):
+class TuneTBLoggerCallback(LoggerCallback):
     r"""
         custom tensorboard logger for ray tune
         modified from ray.tune.logger.TBXLogger
@@ -84,13 +87,19 @@ class TuneTBLogger(Logger):
         if self._file_writer is not None:
             self._file_writer.flush()
 
-TUNE_LOGGERS = (CSVLogger, JsonLogger, TuneTBLogger)
+def get_tune_callbacks():
+    TUNELOGGERCallbacks = [CSVLoggerCallback, JsonLoggerCallback, TuneTBLoggerCallback]
+    TUNELOGGERCallbacks = [callback() for callback in TUNELOGGERCallbacks] 
+
+    return TUNELOGGERCallbacks
 
 import logging, copy
-from ray.tune.suggest import BasicVariantGenerator, SearchGenerator, Searcher
-from ray.tune.config_parser import create_trial_from_spec
-from ray.tune.suggest.variant_generator import generate_variants, format_vars, resolve_nested_dict, flatten_resolved_vars
-from ray.tune.trial import Trial
+from ray.tune.search import BasicVariantGenerator, SearchGenerator, Searcher
+from ray.tune.search.variant_generator import format_vars, _resolve_nested_dict, _flatten_resolved_vars
+from ray.tune.experiment.config_parser import _create_trial_from_spec 
+
+
+from ray.tune.experiment.trial import Trial
 from ray.tune.utils import merge_dicts, flatten_dict
 logger = logging.getLogger(__name__)
 
@@ -109,16 +118,14 @@ class CustomSearchGenerator(SearchGenerator):
             return
 
         spec = copy.deepcopy(experiment_spec)
-        spec["config"] = merge_dicts(spec["config"],
-                                     copy.deepcopy(suggested_config))
+        spec["config"] = merge_dicts(spec["config"],copy.deepcopy(suggested_config))
 
         # Create a new trial_id if duplicate trial is created
-        flattened_config = resolve_nested_dict(spec["config"])
+        flattened_config = _resolve_nested_dict(spec["config"])
         self._counter += 1
-        tag = "{0}_{1}".format(
-            str(self._counter), format_vars(flattened_config))
+        tag = "{0}_{1}".format(str(self._counter), format_vars(flattened_config))
         spec['config']['tag'] = tag # pass down the tag
-        trial = create_trial_from_spec(
+        trial = _create_trial_from_spec(
             spec,
             output_path,
             self._parser,
@@ -127,8 +134,9 @@ class CustomSearchGenerator(SearchGenerator):
             trial_id=trial_id)
         return trial
 
-from ray.tune.suggest.basic_variant import _TrialIterator, convert_to_experiment_list, count_spec_samples, count_variants
-from ray.tune.suggest.basic_variant import warnings, Union, List, itertools, Experiment, SERIALIZATION_THRESHOLD
+from ray.tune.search.basic_variant import _flatten_resolved_vars, _count_spec_samples, _count_variants, _TrialIterator
+from ray.tune.experiment import _convert_to_experiment_list
+from ray.tune.search.basic_variant import warnings, Union, List, itertools, SERIALIZATION_THRESHOLD
 
 class TrialIterator(_TrialIterator):
     def create_trial(self, resolved_vars, spec):
@@ -139,26 +147,26 @@ class TrialIterator(_TrialIterator):
             experiment_tag += "_{}".format(format_vars(resolved_vars))
         spec['config']['tag'] = experiment_tag
         self.counter += 1
-        return create_trial_from_spec(
+        return _create_trial_from_spec(
             spec,
             self.output_path,
             self.parser,
-            evaluated_params=flatten_resolved_vars(resolved_vars),
+            evaluated_params=_flatten_resolved_vars(resolved_vars),
             trial_id=trial_id,
             experiment_tag=experiment_tag)
 
 class CustomBasicVariantGenerator(BasicVariantGenerator):
     def add_configurations(
-            self,
-            experiments: Union[Experiment, List[Experiment], Dict[str, Dict]]):
+        self, experiments: Union["Experiment", List["Experiment"], Dict[str, Dict]]
+    ):
         """Chains generator given experiment specifications.
 
         Arguments:
             experiments (Experiment | list | dict): Experiments to run.
         """
-        experiment_list = convert_to_experiment_list(experiments)
+        experiment_list = _convert_to_experiment_list(experiments)
         for experiment in experiment_list:
-            grid_vals = count_spec_samples(experiment.spec, num_samples=1)
+            grid_vals = _count_spec_samples(experiment.spec, num_samples=1)
             lazy_eval = grid_vals > SERIALIZATION_THRESHOLD
             if lazy_eval:
                 warnings.warn(
@@ -170,7 +178,7 @@ class CustomBasicVariantGenerator(BasicVariantGenerator):
 
             previous_samples = self._total_samples
             points_to_evaluate = copy.deepcopy(self._points_to_evaluate)
-            self._total_samples += count_variants(experiment.spec,
+            self._total_samples += _count_variants(experiment.spec,
                                                   points_to_evaluate)
             iterator = TrialIterator(
                 uuid_prefix=self._uuid_prefix,
