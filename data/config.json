@@ -176,7 +176,7 @@
                 "default": "log_prob"
             }
         ],
-        "revivep": [
+        "revive_p": [
             {
                 "name": "revive_batch_size",
                 "description": "Batch size of training process.",
