@@ -45,6 +45,7 @@ setup(
     url="https://agit.ai/Polixir/revive"
 )
 
+os.system("pyarmor hdinfo")
 config_folder = os.path.join(os.path.expanduser('~'),".revive")
 if not os.path.exists(config_folder):
     os.makedirs(config_folder)
