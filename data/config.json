@@ -57,7 +57,7 @@
         },
         {
             "name": "venv_algo",
-            "description": "Algorithm used in venv training. There are currently three algorithms to choose from, `bc` , `revive_p` and `revive_t`.",
+            "description": "Algorithm used in venv training. There are currently three algorithms to choose from, `bc` and `revive_p`.",
             "type": "str",
             "default": "revive_p"
         },
@@ -111,71 +111,6 @@
         }
     ],
     "venv_algo_config": {
-        "bc": [
-            {
-                "name": "bc_batch_size",
-                "description": "Batch size of training process.",
-                "abbreviation": "bbs",
-                "type": "int",
-                "default": 256
-            },
-            {
-                "name": "bc_epoch",
-                "description": "Number of epcoh for the training process",
-                "abbreviation": "bep",
-                "type": "int",
-                "default": 500
-            },
-            {
-                "name": "policy_hidden_features",
-                "description": "Number of neurons per layer of the policy network.",
-                "abbreviation": "phf",
-                "type": "int",
-                "default": 256
-            },
-            {
-                "name": "policy_hidden_layers",
-                "description": "Depth of policy network.",
-                "abbreviation": "phl",
-                "type": "int",
-                "default": 4,
-                "search_mode": "grid",
-                "search_values": [
-                    3,
-                    4,
-                    5
-                ]
-            },
-            {
-                "name": "policy_backbone",
-                "description": "Backbone of policy network.",
-                "abbreviation": "pb",
-                "type": "str",
-                "default": "res",
-                "search_mode": "grid",
-                "search_values": [
-                    "mlp",
-                    "res"
-                ]
-            },
-            {
-                "name": "g_lr",
-                "description": "Initial learning rate of the training process.",
-                "type": "float",
-                "default": 0.0001,
-                "search_mode": "continuous",
-                "search_values": [
-                    1e-06,
-                    0.001
-                ]
-            },
-            {
-                "name": "loss_type",
-                "description": "Bc support different loss function(\"log_prob\", \"mae\", \"mse\").",
-                "type": "str",
-                "default": "log_prob"
-            }
-        ],
         "revive_p": [
             {
                 "name": "revive_batch_size",
@@ -258,11 +193,7 @@
                 "type": "int",
                 "default": 1,
                 "search_mode": "grid",
-                "search_values": [
-                    1,
-                    3,
-                    5
-                ]
+                "search_values": "[1,3,5]"
             },
             {
                 "name": "d_steps",
@@ -270,11 +201,7 @@
                 "type": "int",
                 "default": 1,
                 "search_mode": "grid",
-                "search_values": [
-                    1,
-                    3,
-                    5
-                ]
+                "search_values": "[1,3,5]"
             },
             {
                 "name": "g_lr",
@@ -282,10 +209,7 @@
                 "type": "float",
                 "default": 4e-05,
                 "search_mode": "continuous",
-                "search_values": [
-                    1e-06,
-                    0.0001
-                ]
+                "search_values": "[1e-06,0.0001]"
             },
             {
                 "name": "d_lr",
@@ -293,10 +217,7 @@
                 "type": "float",
                 "default": 0.0006,
                 "search_mode": "continuous",
-                "search_values": [
-                    1e-06,
-                    0.001
-                ]
+                "search_values": "[1e-06,0.001]"
             },
             {
                 "name": "mae_reward_weight",
@@ -309,6 +230,61 @@
                 "description": "Repeat rollout more data to train generator.",
                 "type": "int",
                 "default": 1
+            }
+        ],
+        "bc": [
+            {
+                "name": "bc_batch_size",
+                "description": "Batch size of training process.",
+                "abbreviation": "bbs",
+                "type": "int",
+                "default": 256
+            },
+            {
+                "name": "bc_epoch",
+                "description": "Number of epcoh for the training process",
+                "abbreviation": "bep",
+                "type": "int",
+                "default": 500
+            },
+            {
+                "name": "policy_hidden_features",
+                "description": "Number of neurons per layer of the policy network.",
+                "abbreviation": "phf",
+                "type": "int",
+                "default": 256
+            },
+            {
+                "name": "policy_hidden_layers",
+                "description": "Depth of policy network.",
+                "abbreviation": "phl",
+                "type": "int",
+                "default": 4,
+                "search_mode": "grid",
+                "search_values": "[3,4,5]"
+            },
+            {
+                "name": "policy_backbone",
+                "description": "Backbone of policy network.",
+                "abbreviation": "pb",
+                "type": "str",
+                "default": "res",
+                "search_mode": "grid",
+                "search_values": "['mlp','res']"
+            },
+            {
+                "name": "g_lr",
+                "description": "Initial learning rate of the training process.",
+                "type": "float",
+                "default": 0.0001,
+                "search_mode": "continuous",
+                "search_values": "[1e-06,0.001]"
+            },
+            {
+                "name": "loss_type",
+                "description": "Bc support different loss function(\"log_prob\", \"mae\", \"mse\").",
+                "type": "str",
+                "default": "log_prob"
             }
         ]
     },
@@ -362,10 +338,7 @@
                 "type": "float",
                 "default": 4e-05,
                 "search_mode": "continuous",
-                "search_values": [
-                    1e-06,
-                    0.001
-                ]
+                "search_values": "[1e-06,0.001]"
             }
         ]
     }

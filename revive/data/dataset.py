@@ -86,7 +86,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         self._check_data()
 
         # construct the data processor
-        self.processing_params = {k : self._get_process_params(self.data[k], self.data_configs[k], self.orders[k]) for k in self.data_configs.keys()}
+        self.processing_params = {k : self._get_process_params(self.data.get(k, None), self.data_configs[k], self.orders[k]) for k in self.data_configs.keys()}
         for curr_name, next_name in self.graph.transition_map.items():
             self.processing_params[next_name] = self.processing_params[curr_name]
             self.orders[next_name] = self.orders[curr_name]
@@ -215,6 +215,12 @@ class OfflineDataset(torch.utils.data.Dataset):
     def _check_data(self):
         '''check if the data format is correct'''
 
+        ''' prepare fake data for no data nodes '''
+        for nodata_node_name in self.graph.nodata_node_names:
+            assert nodata_node_name not in self.data.keys()
+            node_data_dims = len(self.raw_columns[nodata_node_name])
+            self.data[nodata_node_name] = np.ones((list(self.data.values())[0].shape[0], node_data_dims))
+
         '''1. check if the dimension of data matches the dimension described in yaml'''
         for k, v in self.raw_columns.items():
             assert k in self.data.keys(), f'Cannot find `{k}` in the data file, please check!'
@@ -325,6 +331,11 @@ class OfflineDataset(torch.utils.data.Dataset):
                     logger.error(message)
                     raise ValueError(message)
 
+        ''' Delete fake data for no data nodes '''
+        for nodata_node_name in self.graph.nodata_node_names:
+            assert nodata_node_name in self.data.keys()
+            self.data.pop(nodata_node_name)
+
     def _load_data(self, data_file : str):
         '''
             load data from the data file and conduct following processes:
@@ -382,6 +393,8 @@ class OfflineDataset(torch.utils.data.Dataset):
             if node_name not in self.data.keys():
                 warnings.warn(f'Detect node {node_name} is not avaliable in the provided data, trying to compute it ...')
                 node = self.graph.get_node(node_name)
+                if node.node_type != 'function':
+                    continue
                 if node_name in self.graph.transition_map.values() and not node.node_type == 'function': continue
                 assert node.node_type == 'function', \
                     f'You need to provide the function to compute node {node_name} since it is not given in the data!'
@@ -418,7 +431,7 @@ class OfflineDataset(torch.utils.data.Dataset):
             self._min_length -= 1
             self._max_length -= 1
             self.data = Batch(new_data)   
-        
+
         # append mask index for nan value
         self.nan_isin_data = False
         for key in list(self.data.keys()):
@@ -432,12 +445,31 @@ class OfflineDataset(torch.utils.data.Dataset):
                 self.data[key] = df.values
                 self.ignore_check = True
                 self.nan_isin_data = True
+
+        # parse no data nodes: No data node support for training using the revive algo
+        nodata_node_names = []
+        for node in self.graph.nodes.values():
+            node_name = node.name
+            if node_name not in list(self.data.keys()):
+                logger.warning(f'Find no data node. Node type: "{node.node_type}". Node name: "{node_name}".')
+                if node.node_type == "network":
+                    nodata_node_names.append(node_name)
+                elif node.node_type == "function":
+                    # TODO: support automatic calculation of data for function nodes.
+                    pass
+                else:
+                    logger.error(f"Find unknow node_type: {node.node_type}.")
+                    raise NotImplementedError
+        self.graph.nodata_node_names = nodata_node_names
+        self.graph.metric_nodes = list(set(self.graph.metric_nodes) - set(self.graph.nodata_node_names)) 
+
         return self.data
     
     # NOTE: mode should be set before create dataloader
     def transition_mode_(self):
         ''' Set the dataset in transition mode. `__getitem__` will return a transition. '''
-        self.end_indexes = np.arange(0, self.data[list(self.graph.keys())[0]].shape[0]) + 1
+        self.end_indexes = np.arange(0, self.data[self.graph.leaf[0]].shape[0]) + 1
+        # self.end_indexes = np.arange(0, self.data[list(self.graph.keys())[0]].shape[0]) + 1
         self.start_indexes = np.concatenate([np.array([0]), self.end_indexes[:-1]])
         self.traj_lengths = self.end_indexes - self.start_indexes
         self.min_length = np.min(self.traj_lengths)
@@ -522,12 +554,12 @@ class OfflineDataset(torch.utils.data.Dataset):
         order = {}
         fit = {}
         
-
         for config_key in keys:
             raw_columns[config_key], config[config_key], order[config_key], fit[config_key] = self._load_config_for_single_node(data_config, config_key)
 
         # parse graph
         graph_dict = raw_config['metadata'].get('graph', None)
+        # parse metric_nodes
         metric_nodes = raw_config['metadata'].get('metric_nodes', None)
 
         graph = DesicionGraph(graph_dict, raw_columns, fit, metric_nodes)
@@ -713,14 +745,28 @@ class OfflineDataset(torch.utils.data.Dataset):
 
     def _get_process_params(self, data : np.ndarray, data_config : Dict[str, Union[int, str, List[float]]], order : List[int]):
         ''' get necessary parameters for data processor '''
-        data = data.copy()
-        data = data.take(order['forward'], axis=-1)
-
         additional_parameters = []
         forward_slices = []
         backward_slices = []
         forward_start_index = 0
         backward_start_index = 0
+
+        if data is None:
+            total_dims = sum([config["dim"] for config in data_config])
+            for dim in range(total_dims):
+                additional_parameters.append((np.array(0).astype(np.float32), np.array(1).astype(np.float32)))
+            forward_slices.append(slice(0,total_dims))
+            backward_slices.append(slice(0,total_dims))
+
+            return {
+                'forward_slices' : forward_slices,
+                'backward_slices' : backward_slices,
+                'additional_parameters' : additional_parameters,
+            }
+
+
+        data = data.copy()
+        data = data.take(order['forward'], axis=-1)
 
         for config in data_config:
             if config['type'] == 'category':

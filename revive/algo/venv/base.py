@@ -927,6 +927,14 @@ class VenvOperator():
 
             info["least_metric"] = self.least_train_metric
             self.least_metric = self.least_train_metric
+            
+            # Save the k env for every task
+            if self._epoch_cnt % 1 == 0:
+                with TemporaryDirectory() as dirname:
+                    self._save_models(dirname)
+                    venv_train = torch.load(os.path.join(dirname, 'venv_train.pt'), map_location='cpu')
+                    venv_val = torch.load(os.path.join(dirname, 'venv_val.pt'), map_location='cpu')
+                self._data_buffer.update_venv_deque_dict.remote(self._traj_id, venv_train, venv_val)
 
         for k in list(info.keys()):
             if self.NAME in k:
@@ -1092,6 +1100,10 @@ class VenvOperator():
         sample_fn = lambda dist: dist.mode
         generated_data = generate_rollout(expert_data, graph, traj_length, sample_fn, clip=True)
 
+        for node_name in graph.nodata_node_names:
+            assert node_name not in expert_data.keys() 
+            assert node_name in generated_data.keys()
+            expert_data[node_name] = generated_data[node_name] 
         info.update(self._nll_test(expert_data, generated_data, scope))
         info.update(self._mse_test(expert_data, generated_data, scope))
         info.update(self._mae_test(expert_data, generated_data, scope))
@@ -1141,7 +1153,9 @@ class VenvAlgorithm:
         from ray.air import session
 
         def train_func(config):
-            config.update(self.operator_config)
+            for k,v in self.operator_config.items():
+                if not k in config.keys():
+                    config[k] = v
             algo_operator = self.operator(config)
             writer = SummaryWriter(algo_operator._traj_dir)
             epoch = 0

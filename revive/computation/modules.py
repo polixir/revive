@@ -333,6 +333,9 @@ class FeedForwardPolicy(torch.nn.Module):
     def forward(self, state : torch.Tensor, adapt_std : Optional[torch.Tensor] = None) -> ReviveDistribution:
         output = self.backbone(state)
         dist = self.dist_wrapper(output, adapt_std)
+        if hasattr(self, "dist_mu_shift"):
+            dist = dist.shift(self.dist_mu_shift)
+
         return dist
 
     def reset(self):
@@ -370,6 +373,38 @@ class RecurrentPolicy(torch.nn.Module):
         else:
             rnn_output, self.h = self.rnn(x)
         logits = self.mlp(rnn_output)
+        return self.dist_wrapper(logits, adapt_std)
+
+class ContextualPolicy(torch.nn.Module):
+    def __init__(self, 
+                 in_features : int, 
+                 out_features : int, 
+                 hidden_features : int, 
+                 hidden_layers : int, 
+                 dist_config : list, 
+                 backbone_type : Union[str, np.str_] ='contextual_gru'):
+        super().__init__()
+
+        RNN = torch.nn.GRU if backbone_type == 'contextual_gru' else torch.nn.LSTM
+        self.preprocess_mlp = MLP(in_features, hidden_features, 0, 0, output_activation='leakyrelu')
+        self.rnn = RNN(hidden_features, hidden_features, 1)
+        self.mlp = MLP(hidden_features + in_features, out_features, hidden_features, hidden_layers)
+        self.dist_wrapper = DistributionWrapper('mix', dist_config=dist_config)
+
+    def reset(self):
+        self.h = None
+
+    def forward(self, x : torch.Tensor, adapt_std : Optional[torch.Tensor] = None) -> ReviveDistribution:
+        in_feature = x
+        if len(x.shape) == 2:
+            x = x.unsqueeze(0)
+            x = self.preprocess_mlp(x)
+            rnn_output, self.h = self.rnn(x, self.h)
+            rnn_output = rnn_output.squeeze(0)
+        else:
+            x = self.preprocess_mlp(x)
+            rnn_output, self.h = self.rnn(x)
+        logits = self.mlp(torch.cat((in_feature, rnn_output), dim=-1))
         return self.dist_wrapper(logits, adapt_std)
 
 # ------------------------------- Transitions ------------------------------- #

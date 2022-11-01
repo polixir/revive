@@ -182,6 +182,10 @@ class NetworkDecisionNode(DesicionNode):
                 network = RecurrentPolicy(input_dim, output_dim,
                                           hidden_features, hidden_layers,
                                           dist_config, backbone_type)
+            elif backbone_type in ['contextual_gru', 'contextual_lstm']:
+                network = ContextualPolicy(input_dim, output_dim,
+                                          hidden_features, hidden_layers,
+                                          dist_config, backbone_type)
             else:
                 raise ValueError(f'Initializing node `{self.name}`, backbone type {backbone_type} is not supported!')
 
@@ -454,17 +458,46 @@ class DesicionGraph:
         '''return all the network that registered in this graph'''
         return [node.get_network() for node in self.nodes.values() if node.node_type == 'network']
 
-    def is_equal_structure(self, another_graph : 'DesicionGraph') -> bool:
+    def is_equal_structure(self, source_graph : 'DesicionGraph') -> bool:
         ''' check if new graph shares the same structure '''
-        return self.graph_dict == another_graph.graph_dict
+        if self.graph_dict != source_graph.graph_dict:
+            return False
 
-    def copy_graph_model(self, source_graph : 'DesicionGraph') -> bool:
-        ''' copy all the node networks from source graph '''
         for node_name in self.nodes.keys():
             target_node = self.get_node(node_name)
             source_node = source_graph.get_node(node_name)
-            if source_node.node_type == 'network' and target_node.node_type == 'network':
-                target_node.set_network(source_node.get_network())
+            if target_node.input_names != source_node.input_names:
+                return False
+            if target_node.input_descriptions != source_node.input_descriptions:
+                return False
+            if target_node.node_type != source_node.node_type:
+                return False
+            if target_node.node_type == "function":
+                return False
+
+        return True
+
+    def copy_graph_node(self, source_graph : 'DesicionGraph') -> bool:
+        '''try copy all the node from source graph '''
+        for node_name in self.nodes.keys():
+            target_node = self.get_node(node_name)
+            if node_name not in source_graph.nodes.keys():
+                if target_node.node_type == 'network':
+                    logger.warning(f'Find new network node "{node_name}" is not in source_graph. Initialize a new network node.')
+                elif target_node.node_type == 'function':
+                    logger.warning(f'Find new function node "{node_name}" is not in source_graph.')
+                else:
+                    raise NotImplementedError
+            else:
+                try:
+                    source_node = source_graph.get_node(node_name)
+                    assert target_node.input_names == source_node.input_names
+                    assert target_node.input_descriptions == source_node.input_descriptions 
+                    if source_node.node_type == 'network' and target_node.node_type == 'network':
+                        target_node.set_network(source_node.get_network())
+                    logger.info(f'Successfully copy "{node_name}" node from source_graph.')
+                except Exception as e:
+                    logger.warning(f'Failed copy "{node_name}" node from source_graph. {e}')
 
     def get_leaf(self, graph : Dict[str, List[str]] = None) -> List[str]:
         ''' return the leaf of the graph in *alphabet order* '''

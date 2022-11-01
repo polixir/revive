@@ -33,7 +33,7 @@
             "abbreviation": "vrh",
             "description": "Length of sampled trajectory, validate only if the algorithm works on sequential data.",
             "type": "int",
-            "default": 100
+            "default": 50
         },
         {
             "name": "venv_gpus_per_worker",

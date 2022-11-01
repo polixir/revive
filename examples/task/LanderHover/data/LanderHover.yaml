@@ -1,0 +1,24 @@
+metadata:
+  columns:
+  - obs_0:
+      dim: obs
+      type: continuous
+  - obs_1:
+      dim: obs
+      type: continuous
+  - obs_2:
+      dim: obs
+      type: continuous
+  - obs_3:
+      dim: obs
+      type: continuous
+  - action:
+      dim: action
+      type: category
+      values: [0,1,2,3]
+  graph:
+    action:
+    - obs
+    next_obs:
+    - obs
+    - action

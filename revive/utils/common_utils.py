@@ -16,6 +16,7 @@ import ot
 import os
 import ray
 import gym
+import yaml
 import h5py
 import torch
 import random
@@ -49,6 +50,7 @@ from revive.computation.utils import *
 from revive.computation.modules import *
 from revive.data.batch import Batch
 from revive.computation.funs_parser import parser
+# from revive.utils.common_utils import load_data
 
 try:
     import cupy as cp
@@ -364,7 +366,6 @@ def generate_rollout(expert_data : Batch,
         current_batch.update(graph.state_transition(generated_data[-1]))
 
     generated_data = Batch.stack(generated_data)
-
     return generated_data
 
 def compute_lambda_return(rewards, values, bootstrap=None, _gamma=0.9, _lambda=0.98):
@@ -765,9 +766,44 @@ def data_to_dtreeviz(data: pd.DataFrame,
                      target: pd.DataFrame,
                      target_type: (List[str],str),
                      orientation: ('TD', 'LR') = "TD",
-                     fancy: bool = False,
+                     fancy: bool = True, #tzl
                      max_depth: int = 3,
                      output: (str) = None):
+
+    # orange = '#F46d43'
+    # red = '#FF0018'
+    # blue ='#0000F9'
+    # black = '#000000'
+    #
+    custom_color = {'scatter_edge': '#225eab',         
+                    'scatter_marker': '#225eab',
+                    'scatter_marker_alpha':0.3,
+
+                    'wedge': '#F46d43', #orange
+                    'split_line': '#F46d43', #orange
+                    'mean_line': '#F46d43', #orange
+                    
+                    'axis_label': '#000000', #black
+                    'title': '#000000', #black,
+                    'legend_title': '#000000', #black,
+                    'legend_edge': '#000000', #black,
+                    'edge': '#000000', #black,
+                    'color_map_min': '#c7e9b4',
+                    'color_map_max': '#081d58',
+                    # 'classes': color_blind_friendly_colors,
+                    'rect_edge': '#000000', #black,
+                    'text': '#000000', #black,
+                    # 'highlight': 'k',
+                    
+                    'text_wedge': '#000000', #black,
+                    'arrow': '#000000', #black,
+                    'node_label': '#000000', #black,
+                    'tick_label': '#000000', #black,
+                    'leaf_label': '#000000', #black,
+                    'pie': '#000000', #black,      
+                    }
+
+                
     if isinstance(target_type, str) and len(target.columns) > 1:
         target_type = [target_type,] * len(target.columns)
     
@@ -775,11 +811,11 @@ def data_to_dtreeviz(data: pd.DataFrame,
 
     with TemporaryDirectory() as dirname:
         for _target_type, target_name in zip(target_type,target.columns):
-            if _target_type == "Classifier" or _target_type == "C":
-                _target_type = "Classifier"
+            if _target_type == "Classification" or _target_type == "C":
+                _target_type = "Classification"
                 decisiontree = tree.DecisionTreeClassifier(max_depth=max_depth)
-            elif _target_type == "Regressor" or _target_type == "R":
-                _target_type = "Regressor" 
+            elif _target_type == "Regression" or _target_type == "R":
+                _target_type = "Regression" 
                 decisiontree = tree.DecisionTreeRegressor(max_depth=max_depth,random_state=1)
             else:
                 raise NotImplementedError
@@ -787,30 +823,47 @@ def data_to_dtreeviz(data: pd.DataFrame,
             _target = target[[target_name,]]
             decisiontree.fit(data,_target)
 
-            if _target_type == "Classifier":
+            temp_size = min(data.values.shape[0],5000)   
+            np.random.seed(2020)
+            random_index = np.random.choice(np.arange(data.values.shape[0]), size=(temp_size,))
+
+
+            if _target_type == "Classification":
                 _orientation = "TD"
-                _target = _target.values.reshape(-1)
-                class_names = list(set(list(_target)))
+                class_names = list(set(list(_target.values.reshape(-1))))
+                _target = _target.values[random_index,:].reshape(-1)
+                
             else:
-                _target = _target.values
+                _target = _target.values[random_index,:]
                 class_names = None
                 _orientation = "LR"
-
+            
             viz = dtreeviz(decisiontree,
-                        data.values,
-                        _target,
-                        target_name=target_name,
-                        feature_names=data.columns,
-                        class_names=class_names,
-                        title = target_name + " " + _target_type + " Tree",
-                        orientation = _orientation,
-                        fancy=fancy,
-                        scale = 2)
+                           data.values[random_index,:],
+                           _target,
+                            target_name=target_name,
+                            feature_names=data.columns,
+                            class_names=class_names,
+
+                            show_root_edge_labels = True,
+                            show_node_labels = False,
+
+                            title = _target_type + " Decision Tree of "+ '<'+ target_name + '>',
+                            orientation = _orientation,
+
+                            label_fontsize = 15,
+                            ticks_fontsize = 10,
+                            title_fontsize = 15,
+
+                            fancy=fancy,
+                            scale = 2,
+                            colors = custom_color,
+                            cmap = "cool",)
 
             _tmp_pdf_path = os.path.join(dirname, str(uuid1())+".pdf")
             _tmp_pdf_paths.append(_tmp_pdf_path)
             svg2pdf(url=viz.save_svg(), 
-                    output_width=800, 
+                    output_width=1000, 
                     output_height=1000, 
                     write_to=_tmp_pdf_path)
 
@@ -877,7 +930,7 @@ def net_to_tree(tree_save_path: str,
     generated_data = processor.deprocess(generated_data)
 
     sample_num = expert_data[list(nodes.keys())[0]].shape[0]
-    size = min(sample_num, 20000)
+    size = min(sample_num, 100000)
     select_indexs = np.random.choice(np.arange(sample_num), size=size, replace=False)
 
     for output_node,output_node_dims in nodes.items():
@@ -894,6 +947,17 @@ def net_to_tree(tree_save_path: str,
         output_data = output_data[select_indexs]
 
         X = pd.DataFrame(input_data, columns=input_node_dims) 
-        Y = pd.DataFrame(output_data, columns=output_node_dims) 
-        Y_type = "R"
+        Y = pd.DataFrame(output_data, columns=output_node_dims)
+
+        # begin bug fix tuzuolin 2022-1010 
+        # Y_type = "R"
+        from collections import ChainMap # tuzuolin 2022 1011
+        temp_dict = dict(ChainMap(*graph.descriptions[output_node]))
+        Y_type = []
+        for i_type in map(lambda x: temp_dict[x]['type'], output_node_dims):
+            Y_type.append("C" if i_type == 'category' else "R")
+        
         result = data_to_dtreeviz(X,Y,Y_type, output=os.path.join(tree_save_path,output_node+".pdf"))
+
+
+

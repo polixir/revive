@@ -61,7 +61,7 @@ if __name__ == '__main__':
         tune_initial_state = load_data(tuning_initial_state_file)
     else:
         tune_initial_state = None
-    
+
     server = ReviveServer(dataset_file_path, dataset_desc_file_path, 
                           val_file_path=dataset_val_file_path, 
                           reward_file_path=reward_file_path, 

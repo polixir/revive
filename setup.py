@@ -35,17 +35,17 @@ setup(
         'h5py',
         'pytest',
         'CairoSVG==2.5.2',
-        'dtreeviz==1.3.2',
+        'dtreeviz==1.4.0',
         'PyPDF2==1.26.0',
         'pyarmor==7.3.0',
         'prometheus_client==0.13.1',
         'prettytable',
         'wurlitzer',
+        'causal-learn==0.1.3.0',
     ],
     url="https://agit.ai/Polixir/revive"
 )
 
-os.system("pyarmor hdinfo")
 config_folder = os.path.join(os.path.expanduser('~'),".revive")
 if not os.path.exists(config_folder):
     os.makedirs(config_folder)
