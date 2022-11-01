@@ -232,12 +232,11 @@ class ReviveServer:
             self.venv.check_version()
 
             if not self.graph.is_equal_structure(self.venv.graph):
-                warnings.warn('Detect different graph between loaded venv and data config, it is mostly cased by change of config file, trying to rebuild ...')
-                
+                # logger.warning('Detect different graph between loaded venv and data config, it is mostly cased by change of config file, trying to rebuild ...')
                 venv_list = []
                 for _venv in self.venv.env_list:
                     graph = deepcopy(self.graph)
-                    graph.copy_graph_model(_venv.graph)
+                    graph.copy_graph_node(_venv.graph)
                     venv_list.append(VirtualEnvDev(graph))
                 self.venv = VirtualEnv(venv_list)
 
@@ -414,7 +413,6 @@ class ReviveServer:
         if self.venv is not None:
             with open(os.path.join(self.workspace, 'env.pkl'), 'wb') as f:
                 pickle.dump(self.venv, f)
-
             try:
                 self.venv.export2onnx(os.path.join(self.workspace, 'env.onnx'), verbose=False)
             except Exception as e:

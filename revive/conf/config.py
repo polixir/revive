@@ -62,7 +62,7 @@ DEFAULT_CONFIG = [
         'abbreviation' : 'dw',
         'description' : 'Number of workers to load data.',
         'type' : int,
-        'default' : 2,
+        'default' : 1,
     },   
     {
         'name' : 'continuous_distribution_type',
@@ -111,7 +111,7 @@ DEFAULT_CONFIG = [
         'abbreviation' : 'vrh',
         'description' : 'Length of sampled trajectory, validate only if the algorithm works on sequential data.',
         'type' : int,
-        'default' : 10,
+        'default' : 100,
         'doc': True,
     },
     {
@@ -156,7 +156,7 @@ DEFAULT_CONFIG = [
         'abbreviation' : 'nvs',
         'description' : 'Max number of the chosen venv among the process of hyper-parameter search.',
         'type' : int,
-        'default' : 5,
+        'default' : 1,
     },  
     {
         'name' : 'nll_test',
@@ -245,7 +245,7 @@ DEFAULT_CONFIG = [
         'abbreviation' : 'th',
         "description": "Rollout length of the venv test.",
         "type": int,
-        "default": 10,
+        "default": 100,
         'doc': True,
     },
     {
@@ -389,7 +389,13 @@ DEFAULT_CONFIG = [
         "description": "level of printed log. `0` means no printed log; `1` means minimal printed log; `2` means full log.",
         "type": int,
         "default": 1,
-    }
+    },
+    # {
+    #     "name": "rew_trans",
+    #     "description": "reward_transformation",
+    #     "type": bool,
+    #     "default": False,
+    # }
 ]
 
 DEBUG_CONFIG = deepcopy(DEFAULT_CONFIG)

@@ -15,6 +15,7 @@
 
 import os
 import ray
+import math
 import torch
 import warnings
 import argparse
@@ -394,22 +395,41 @@ class PolicyOperator():
             env.requires_grad_(False)
             env.set_target_policy_name(self.policy_name)
 
+        logger.info(f"Find {len(self.envs)} envs.")
         if len(self.envs) == 1:
-            warnings.warn('Only one venv found, use it in both training and validation!')
+            logger.warning('Only one venv found, use it in both training and validation!')
             self.envs_train = self.envs
             self.envs_val = self.envs
         else:
             self.envs_train = self.envs[:len(self.envs)//2]
             self.envs_val = self.envs[len(self.envs)//2:]
 
+        #if self.config['num_venv_in_use'] > len(self.envs_train):
+        #    warnings.warn(f"Config requires {self.config['num_venv_in_use']} venvs, but only {len(self.envs_train)} venvs are available.")
+        
         if self.config['num_venv_in_use'] > len(self.envs_train):
-            warnings.warn(f"Config requires {self.config['num_venv_in_use']} venvs, but only {len(self.envs_train)} venvs are available.")
+            logger.info("Adjusting the distribution to generate multiple env models.")
+            mu_shift_list = np.linspace(-0.15, 0.15, num=(self.config['num_venv_in_use']-1))
+            for mu_shift in mu_shift_list:
+                if mu_shift == 0:
+                    continue
+                env_train = deepcopy(self.envs_train[0])
+                for node in env_train.graph.nodes.values():
+                    if node.node_type == 'network':
+                        node.network.dist_mu_shift = mu_shift
+                self.envs_train.append(env_train)
 
-        self.envs_train = self.envs_train[:self.config['num_venv_in_use']]
-        self.envs_val = self.envs_val[:self.config['num_venv_in_use']]
+                env_val = deepcopy(self.envs_train[0])
+                for node in env_val.graph.nodes.values():
+                    if node.node_type == 'network':
+                        node.network.dist_mu_shift = mu_shift
+                self.envs_val.append(env_train)       
+        else:
+            self.envs_train = self.envs_train[:self.config['num_venv_in_use']]
+            self.envs_val = self.envs_val[:self.config['num_venv_in_use']]
 
         self.behaviour_nodes = [self.envs[0].graph.get_node(policy_name) for policy_name in self.policy_name]
-        self.behaviour_policys =  [behaviour_node.get_network() for behaviour_node in self.behaviour_nodes]
+        self.behaviour_policys =  [behaviour_node.get_network() for behaviour_node in self.behaviour_nodes if behaviour_node.get_network()]
 
         # find average reward from expert data
         dataset = ray.get(self.config['dataset'])
@@ -610,7 +630,6 @@ class PolicyOperator():
                     continue
                 actions_step_data[k] = v[index]
                 
-            import math
             reward = generated_data["reward"]
             reward_pad_steps = math.ceil(reward.shape[0] / self.config["action_steps"]) * self.config["action_steps"]  - reward.shape[0]
             reward_pad = torch.cat([reward, reward[-1:].repeat(reward_pad_steps,1,1)],axis=0)
@@ -665,17 +684,26 @@ class PolicyOperator():
 
         sample_fn = lambda dist: dist.rsample() if maintain_grad_flow else dist.sample()
 
+        if isinstance(env, list):
+            sample_env_nums = min(min(3,len(env)),batch_size)
+            env_id = random.sample(range(len(env)), k=sample_env_nums)
+            n = int(math.ceil(batch_size / float(sample_env_nums)))
+            env_batch_index = [range(batch_size)[i:min(i + n,batch_size)] for i in range(0, batch_size, n)]
+
+
         for i in range(traj_length):
             for policy_index, policy_name in enumerate(self.policy_name):
                 if isinstance(env, list):
                     result_batch = []
-                    for _env in env:
-                        _current_batch = deepcopy(current_batch)
+                    use_env_id = -1
+                    for _env_id,_env in enumerate(env):
+                        if _env_id not in env_id:
+                            continue
+                        use_env_id += 1
+                        _current_batch = deepcopy(current_batch)[env_batch_index[use_env_id],:]
                         _current_batch = _env.pre_computation(_current_batch, deterministic, clip, policy_index)
                         result_batch.append(_current_batch)
-                    result_batch = Batch.stack(result_batch, axis=0)
-                    select_indexes = np.random.randint(0, len(self.envs_train), size=batch_size)
-                    current_batch = result_batch[select_indexes, np.arange(batch_size)]
+                    current_batch = Batch.cat(result_batch)
                 else:
                     current_batch = env.pre_computation(current_batch, deterministic, clip, policy_index)
 
@@ -698,13 +726,15 @@ class PolicyOperator():
 
                 if isinstance(env, list):
                     result_batch = []
-                    for _env in env:
-                        _current_batch = deepcopy(current_batch)
+                    use_env_id = -1
+                    for _env_id,_env in enumerate(env):
+                        if _env_id not in env_id:
+                            continue
+                        use_env_id += 1
+                        _current_batch = deepcopy(current_batch)[env_batch_index[use_env_id],:]
                         _current_batch = _env.post_computation(_current_batch, deterministic, clip, policy_index)
                         result_batch.append(_current_batch)
-                    result_batch = Batch.stack(result_batch, axis=0)
-                    select_indexes = np.random.randint(0, len(self.envs_train), size=batch_size)
-                    current_batch = result_batch[select_indexes, np.arange(batch_size)]
+                    current_batch = Batch.cat(result_batch)
                 else:
                     current_batch = env.post_computation(current_batch, deterministic, clip, policy_index)
 
@@ -734,16 +764,21 @@ class PolicyOperator():
                         _model.train()
             except:
                 self.models.train()
+                
 
         metric_meters_train = AverageMeterCollection()
 
         for batch_idx, batch in enumerate(iter(self._train_loader_train)):
+            
             batch_info = {
                 "batch_idx": batch_idx,
                 "global_step": self.global_step
             }
             batch_info.update(info)
-            metrics = self.train_batch(batch, batch_info=batch_info, scope='train')
+            if self._epoch_cnt <= self.config.get("policy_bc_epoch", 0):
+                metrics = self.bc_train_batch(batch, batch_info=batch_info, scope='train')
+            else:
+                metrics = self.train_batch(batch, batch_info=batch_info, scope='train')
 
             metric_meters_train.update(metrics, n=metrics.pop(NUM_SAMPLES, 1))
             self.global_step += 1
@@ -760,7 +795,11 @@ class PolicyOperator():
                     "global_step": self.global_step
                 }
                 batch_info.update(info)
-                metrics = self.train_batch(batch, batch_info=batch_info, scope='val')
+                if self._epoch_cnt <= self.config["policy_bc_epoch"]:
+                    metrics = self.bc_train_batch(batch, batch_info=batch_info, scope='val')
+                else:
+                    metrics = self.train_batch(batch, batch_info=batch_info, scope='val')
+                
 
                 metric_meters_val.update(metrics, n=metrics.pop(NUM_SAMPLES, 1))
                 self.global_step += 1
@@ -933,7 +972,9 @@ class PolicyAlgorithm:
         from torch.utils.tensorboard import SummaryWriter
         from ray.air import session
         def train_func(config):
-            config.update(self.operator_config)
+            for k,v in self.operator_config.items():
+                if not k in config.keys():
+                    config[k] = v
             algo_operator = self.operator(config)
             writer = SummaryWriter(algo_operator._traj_dir)
             epoch = 0

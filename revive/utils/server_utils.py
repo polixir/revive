@@ -20,6 +20,7 @@ import torch
 import warnings
 from ray import tune
 from loguru import logger
+from collections import deque
 from ray.tune import CLIReporter
 from collections import OrderedDict
 
@@ -45,6 +46,8 @@ class DataBufferEnv:
         self.status_dict = OrderedDict()
         self.best_venv = None
         self.best_model_workspace = None
+
+        self.venv_deque_dict = dict()
 
     def update_status(self, task_id : int, status : str, message : str = ''):
         old_message = '' if not task_id in self.status_dict.keys() else self.status_dict[task_id][1]
@@ -72,6 +75,13 @@ class DataBufferEnv:
     def get_num_of_trial(self) -> int:
         return self.num_of_trial
 
+    def update_venv_deque_dict(self, task_id, venv_train, venv_val):
+        if task_id not in self.venv_deque_dict.keys():
+            self.venv_deque_dict[task_id] = deque(maxlen=self.venv_max_num)
+            
+        self.venv_deque_dict[task_id].append((venv_train, venv_val))
+        
+        
     def update_metric(self, task_id : int, metric : Dict[int, Union[float, VirtualEnvDev]]):
         self.metric_dict[task_id] = metric
         self.metric_dict = OrderedDict(sorted(self.metric_dict.items(), key=lambda x: x[1]['metric']))
@@ -80,9 +90,23 @@ class DataBufferEnv:
         self.max_acc = info['acc']
         self.best_model_workspace = info['traj_dir']
         
-        venv_list = self.get_venv_list()[:self.venv_max_num]
+        """ 
+        # Save the top-k env for every task
+        if task_id not in self.venv_deque_dict.keys():
+            self.venv_deque_dict[task_id] = deque(maxlen=self.venv_max_num)
+
+        self.venv_deque_dict[task_id].append((metric['venv_train'], metric['venv_val']))
+        """
+
+        venv_list = self.get_venv_list()
+        if (len(venv_list) <= self.venv_max_num) and (self.best_id in self.venv_deque_dict.keys()):
+            venv_list += [venv_pair for venv_pair in list(self.venv_deque_dict[self.best_id])[:-1][::-1]]
+            venv_list = venv_list[:self.venv_max_num]
+        else:
+            venv_list = venv_list[:self.venv_max_num]
         venv = VirtualEnv([pair[0] for pair in venv_list] + [pair[1] for pair in venv_list])
         self.set_best_venv(venv)
+        
 
     def get_max_acc(self) -> float:
         return self.max_acc
@@ -304,6 +328,7 @@ class TunePolicyTrain(object):
         tune_params["metric"] = "mean_accuracy"
         tune_params["mode"] = "max"
         analysis = tune.run(torchTrainable, **tune_params)
+        
         # best_df = analysis.dataframe(metric="mean_accuracy", mode="max")
         # best_config = analysis.get_best_config(metric="mean_accuracy", mode="max")
         self.logger.update.remote(key="task_state", value="End")
