@@ -41,7 +41,7 @@ class get_results:
             for i_step in range(step):
                 temp.append(self.env.render(mode='rgb_array'))
                 action = self.take_revive_action(state)
-                next_state, reward, _, _ = self.env.step(action)
+                next_state, reward, *_ = self.env.step(action)
                 r_temp.append(reward)
                 epoch_return += reward
                 state = next_state
@@ -59,7 +59,7 @@ class get_results:
                 temp.append(self.env.render(mode='rgb_array'))
                 action = self.policy_old.take_action(state)
                 action = action.reshape(1,)
-                next_state, reward, _, _ = self.env.step(action)
+                next_state, reward, *_ = self.env.step(action)
                 r_temp.append(reward)
                 epoch_return += reward
                 state = next_state.reshape(3,)

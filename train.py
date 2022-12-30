@@ -91,6 +91,7 @@ if __name__ == '__main__':
         task_table.add_row(["Virtual Environment", venv_status[1]["task_state"], venv_status[1]["venv_acc"], venv_status[1]["current_num_of_trials"], venv_status[1]["total_num_of_trials"]])
         task_table.add_row(["Policy Model", policy_status[1]["task_state"], policy_status[1]["policy_acc"], policy_status[1]["current_num_of_trials"], policy_status[1]["total_num_of_trials"]])
         print(task_table)
+        logger.info(task_table)
 
         try:
             if venv_status[1]['task_state'] == 'End' and policy_status[1]['task_state'] == 'End' and tuning_status[1]['task_state'] == 'End':

@@ -139,10 +139,9 @@ class ReviveServer:
         self.config['workspace'] = self.workspace
         os.makedirs(self.workspace, mode=0o777, exist_ok=True)
         assert os.path.exists(self.workspace)
-        self.log_path = os.path.join(os.path.abspath(self.workspace),"revive.log")
-        logger.add(self.log_path)
-
-        self.revive_config_file_path = revive_config_file_path
+        self.revive_log_path = os.path.join(os.path.abspath(self.workspace),"revive.log")
+        self.config["revive_log_path"] = self.revive_log_path
+        logger.add(self.revive_log_path)
 
         if revive_config_file_path is not None:
             with open(revive_config_file_path, 'r') as f:
@@ -150,10 +149,12 @@ class ReviveServer:
             self.config.update(custom_config)
             for parameter_description in custom_config.get('base_config', {}):
                 self.config[parameter_description['name']] = parameter_description['default']
-        else:
-            self.revive_config_file_path = os.path.join(self.workspace, "config.json")
-            with open(self.revive_config_file_path, 'w') as f:
-                json.dump(self.config,f)
+
+        revive_config_save_file_path = os.path.join(self.workspace, "config.json")
+        with open(revive_config_save_file_path, 'w') as f:
+            json.dump(self.config,f)
+            
+        self.revive_config_file_path = revive_config_save_file_path
 
         ''' preprocess config'''
         # NOTE: in crypto mode, each trail is fixed to use one GPU.
@@ -210,8 +211,10 @@ class ReviveServer:
         self.config['tuner_data_buffer'] = self.tuner_data_buffer
 
         ''' try to load existing venv and policy '''
-        self._reload_venv(os.path.join(self.workspace, 'env.pkl'))
-        self._reload_policy(os.path.join(self.workspace, 'policy.pkl'))
+        self.env_save_path = kwargs.get("env_save_path", None)
+        self.policy_save_path = kwargs.get("policy_save_path", None)
+        #self._reload_venv(os.path.join(self.workspace, 'env.pkl'))
+        #self._reload_policy(os.path.join(self.workspace, 'policy.pkl'))
 
         self.venv_acc = - float('inf')
         self.policy_acc = - float('inf')
@@ -224,20 +227,26 @@ class ReviveServer:
         with open(os.path.join(self.workspace, ".env.json"), 'w') as f:
             json.dump(data, f)
 
-    def _reload_venv(self, path : str):
+    def _reload_venv(self, path: str, return_graph: bool = False):
         r'''Reload a venv from the given path'''
         try:
             with open(path, 'rb') as f:
                 self.venv = pickle.load(f)
             self.venv.check_version()
+            if not self.graph.is_equal_venv(self.venv.graph,self.config['target_policy_name']):
+                logger.error('Detect different graph between loaded venv and data config, it is mostly cased by change of config file, trying to rebuild ...')
+                logger.error('Please check if there are some changes between config files of learing Environment and Policy!')
+                sys.exit()
 
             if not self.graph.is_equal_structure(self.venv.graph):
-                # logger.warning('Detect different graph between loaded venv and data config, it is mostly cased by change of config file, trying to rebuild ...')
+                logger.warning('graph.is_equal_structure Detect different graph between loaded venv and data config, it is mostly cased by change of config file, trying to rebuild ...')
                 venv_list = []
                 for _venv in self.venv.env_list:
                     graph = deepcopy(self.graph)
                     graph.copy_graph_node(_venv.graph)
                     venv_list.append(VirtualEnvDev(graph))
+                if return_graph:
+                    return graph             
                 self.venv = VirtualEnv(venv_list)
 
             ray.get(self.venv_data_buffer.set_best_venv.remote(self.venv))
@@ -272,6 +281,11 @@ class ReviveServer:
         r"""
         Start ray worker train the virtual environment based on the data;
         """
+        if self.env_save_path and os.path.exists(self.env_save_path):
+            graph = self._reload_venv(self.env_save_path, return_graph=True)
+            self.config['graph'] = graph
+            self.graph = graph
+        
         self.venv_logger = ray.remote(Logger).remote()
         self.venv_logger.update.remote(key="task_state", value="Wait")
 
@@ -295,7 +309,7 @@ class ReviveServer:
 
             if self.config["venv_algo"] == "revive":
                 self.config["venv_algo"] = "revive_p"
-
+            logger.remove()
             if self.venv_mode == 'once':
                 venv_trainer = ray.remote(VenvTrain).remote(self.config, self.venv_logger, command=sys.argv[1:])
                 venv_trainer.train.remote()
@@ -303,7 +317,8 @@ class ReviveServer:
             elif self.venv_mode == 'tune':
                 self.venv_trainer = ray.remote(TuneVenvTrain).remote(self.config, self.venv_logger, command=sys.argv[1:])
                 self.venv_trainer.train.remote()
-
+            logger.add(self.revive_log_path)
+            
     def train_policy(self, env_save_path : Optional[str] = None):
         r"""
         Start ray worker train train policy based on the virtual environment.
@@ -314,12 +329,15 @@ class ReviveServer:
         .. note:: Before train policy, environment models and reward function should be provided.
 
         """
-        if env_save_path is not None:
+        if not env_save_path:
+            env_save_path = os.path.join(self.workspace, 'env.pkl')
             self._reload_venv(env_save_path)
+            if self.venv is None:
+                logger.warning(f"Can't load the exist env model.")
 
         self.policy_logger = ray.remote(Logger).remote()
         self.policy_logger.update.remote(key="task_state", value="Wait")
-
+        logger.remove()
         if self.policy_mode == 'None':
             self.policy_logger.update.remote(key="task_state", value="End")
         elif self.policy_mode == 'once':
@@ -331,6 +349,7 @@ class ReviveServer:
             assert self.reward_func is not None, 'policy training need reward function'
             self.policy_trainer = ray.remote(TunePolicyTrain).remote(self.config, self.policy_logger, self.venv_logger, command=sys.argv[1:])
             self.policy_trainer.train.remote()
+        logger.add(self.revive_log_path)
 
     def tune_parameter(self, env_save_path : Optional[str] = None):
         r"""
@@ -419,7 +438,7 @@ class ReviveServer:
                 pass
                 logger.info(f"Can't to export venv to ONNX. -> {e}")
         status_message = ray.get(self.venv_data_buffer.get_status.remote())
-
+        
         return self.venv, train_log, status_message, best_model_workspace
 
     def get_policy_model(self) -> Tuple[PolicyModel, Dict[str, Union[str, float]], Dict[int, Tuple[str, str]]]:
@@ -459,7 +478,9 @@ class ReviveServer:
             with open(os.path.join(self.workspace, 'policy.pkl'), 'wb') as f:
                 pickle.dump(self.policy, f)
             try:
-                self.policy.export2onnx(os.path.join(self.workspace, 'policy.onnx'), verbose=False)
+                tmp_policy = deepcopy(self.policy)
+                tmp_policy.reset()
+                tmp_policy.export2onnx(os.path.join(self.workspace, 'policy.onnx'), verbose=False)
             except Exception as e:
                 logger.info(f"Can't to export venv to ONNX. -> {e}")
 

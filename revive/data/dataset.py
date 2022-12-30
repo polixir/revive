@@ -67,6 +67,7 @@ class OfflineDataset(torch.utils.data.Dataset):
 
         self.graph.ts_nodes = self.ts_nodes
         self.graph.ts_node_frames = self.ts_node_frames
+        self.graph.freeze_nodes = getattr(self, "freeze_nodes", [])
         
         # pop up unused keys
         used_keys = list(self.graph.keys()) + self.graph.leaf + ['done']
@@ -122,6 +123,8 @@ class OfflineDataset(torch.utils.data.Dataset):
         nodes_config = raw_config['metadata'].get('nodes', None)
         self.ts_nodes = {}
         self.ts_node_frames = {}
+        self.use_step_node = False
+        self.expert_functions = raw_config['metadata'].get('expert_functions',{})
 
         if nodes_config:
             ############################ append step node ############################
@@ -131,85 +134,92 @@ class OfflineDataset(torch.utils.data.Dataset):
                 trj_index = [0,] + list(raw_data["index"])
                 step_node_data_list = []
                 for trj_start_index, trj_end_index in zip(trj_index[:-1], trj_index[1:]):
-                    step_node_data_list.append(np.arange(trj_start_index, trj_end_index-trj_start_index).reshape(-1,1))
+                    step_node_data_list.append(np.arange(0, trj_end_index-trj_start_index).reshape(-1,1))
                 step_node_data = np.concatenate(step_node_data_list,axis=0)
                 raw_data["step_node_"] = step_node_data
                 raw_config['metadata']['columns'] += [{'step_node_': {'dim': 'step_node_', 'type': 'continuous'}},]
 
-                use_step_node = False
                 for node, step_node_flag in step_node_config.items():
                     if node not in graph_dict.keys():
                         continue 
                     if step_node_flag:
                         logger.info(f"Append step_node data as the {node} node's input.")
                         graph_dict[node] = graph_dict[node] + ["step_node_",]
-                        use_step_node = True 
+                        self.use_step_node = True
                 # append step_node_function
-                if use_step_node:
-                    expert_functions = raw_config['metadata'].get('expert_functions',{})
+                if self.use_step_node:
+                    # self.expert_functions = raw_config['metadata'].get('expert_functions',{})
                     shutil.copyfile(os.path.join(os.path.dirname(revive.__file__),"./common/step_node_function.py"),  os.path.join(os.path.dirname(self.config_file), "./step_node_function.py"))
-                    expert_functions["step_node_"] = {"node_function": "step_node_function.get_next_step_node"}
+                    self.expert_functions["step_node_"] = {"node_function": "step_node_function.get_next_step_node"}
+                    
+                self._raw_config = raw_config
+                self._raw_data = raw_data
                     
             ############################ append ts ###################################
             # collect nodes config
             ts_frames_config = {"ts_"+k:v["ts"] for k,v in nodes_config.items() if "ts" in v.keys()}
             ts_frames_config = {k:v for k,v in ts_frames_config.items() if v > 1}
-            max_ts_frames = max(ts_frames_config.values())
+            if ts_frames_config:
+                max_ts_frames = max(ts_frames_config.values())
 
-            nodes = list(graph_dict.keys())
-            for output_node in list(graph_dict.keys()):
-                nodes += list(graph_dict[output_node])
-            nodes = list(set(nodes))
-            # parse nno ts_nodes
-            for index, node in enumerate(nodes):
-                if node.startswith("next_ts_"):
-                    nodes[index] = "next_" + node[8:]
-                if node.startswith("ts_"):
-                    nodes[index] = node[3:]     
+                nodes = list(graph_dict.keys())
+                for output_node in list(graph_dict.keys()):
+                    nodes += list(graph_dict[output_node])
+                nodes = list(set(nodes))
+                # parse nno ts_nodes
+                for index, node in enumerate(nodes):
+                    if node.startswith("next_ts_"):
+                        nodes[index] = "next_" + node[8:]
+                    if node.startswith("ts_"):
+                        nodes[index] = node[3:]     
 
-            ts_nodes = {"ts_"+node:node for node in nodes if "ts_"+node in ts_frames_config.keys()}
-            for ts_node,node in ts_nodes.items():
-                if node not in raw_data.keys():
-                    logger.error(f"Can't find '{node}' node data.")
-                    sys.exit()
-            self.ts_nodes = ts_nodes
-            
-            # ts_node npz data
-            trj_index = [0,] + list(raw_data["index"])
-            new_data = {k:[] for k in ts_nodes.keys()}
-            new_index = []
-            i = 1
-            for trj_start_index, trj_end_index in zip(trj_index[:-1], trj_index[1:]):
-                new_index.append(trj_end_index+(i*(max_ts_frames-1)))
-                i += 1
+                ts_nodes = {"ts_"+node:node for node in nodes if "ts_"+node in ts_frames_config.keys()}
                 for ts_node,node in ts_nodes.items():
+                    if node not in raw_data.keys():
+                        logger.error(f"Can't find '{node}' node data.")
+                        sys.exit()
+                self.ts_nodes = ts_nodes
+                
+                # ts_node npz data
+                trj_index = [0,] + list(raw_data["index"])
+                new_data = {k:[] for k in ts_nodes.keys()}
+                new_index = []
+                i = 1
+                for trj_start_index, trj_end_index in zip(trj_index[:-1], trj_index[1:]):
+                    new_index.append(trj_end_index+(i*(max_ts_frames-1)))
+                    i += 1
+                    for ts_node,node in ts_nodes.items():
+                        ts_node_frames = ts_frames_config[ts_node]
+                        self.ts_node_frames[ts_node] = ts_node_frames
+                        pad_data = np.concatenate([np.repeat(raw_data[node][trj_start_index:trj_start_index+1],repeats=ts_node_frames-1,axis=0), raw_data[node][trj_start_index:trj_end_index]])
+                        new_data[ts_node].append(np.concatenate([pad_data[i:i+(trj_end_index-trj_start_index)] for i in range(ts_node_frames)], axis=1))
+                new_data = {k:np.concatenate(v,axis=0) for k,v in new_data.items()}
+                raw_data.update(new_data)
+
+                # ts_node columns
+                for ts_node, node in ts_nodes.items():
                     ts_node_frames = ts_frames_config[ts_node]
-                    self.ts_node_frames[ts_node] = ts_node_frames
-                    pad_data = np.concatenate([np.repeat(raw_data[node][trj_start_index:trj_start_index+1],repeats=ts_node_frames-1,axis=0), raw_data[node][trj_start_index:trj_end_index]])
-                    new_data[ts_node].append(np.concatenate([pad_data[i:i+(trj_end_index-trj_start_index)] for i in range(ts_node_frames)], axis=1))
-            new_data = {k:np.concatenate(v,axis=0) for k,v in new_data.items()}
-            raw_data.update(new_data)
-
-            # ts_node columns
-            for ts_node, node in ts_nodes.items():
-                ts_node_frames = ts_frames_config[ts_node]
-                node_columns = [c for c in raw_config['metadata']['columns'] if list(c.values())[0]["dim"] == node]
-                ts_node_columns = []
-                ts_index = 0
-                for ts_index in range(ts_node_frames):
-                    for node_column in node_columns:
-                        node_column_value = deepcopy(list(node_column.values())[0])
-                        node_column_name = deepcopy(list(node_column.keys())[0])
-                        node_column_value["dim"] = ts_node
-                        if ts_index+1 < ts_node_frames:
-                            node_column_value["fit"] = False
-                        ts_node_columns.append({"ts-"+str(ts_index)+"_"+node_column_name:node_column_value})
-            
-                raw_config['metadata']['columns'] += ts_node_columns
-            
-            self._raw_config = raw_config
-            self._raw_data = raw_data
-
+                    node_columns = [c for c in raw_config['metadata']['columns'] if list(c.values())[0]["dim"] == node]
+                    ts_node_columns = []
+                    ts_index = 0
+                    for ts_index in range(ts_node_frames):
+                        for node_column in node_columns:
+                            node_column_value = deepcopy(list(node_column.values())[0])
+                            node_column_name = deepcopy(list(node_column.keys())[0])
+                            node_column_value["dim"] = ts_node
+                            if ts_index+1 < ts_node_frames:
+                                node_column_value["fit"] = False
+                            ts_node_columns.append({"ts-"+str(ts_index)+"_"+node_column_name:node_column_value})
+                
+                    raw_config['metadata']['columns'] += ts_node_columns
+                
+                self._raw_config = raw_config
+                self._raw_data = raw_data
+            ##################################################################
+            ############################ collect freeze node #################
+            # collect nodes config
+            self.freeze_nodes = [k for k,v in nodes_config.items() if "freeze" in v.keys() and v["freeze"]]
+            logger.info("Freeze the following nodes without training -> {self.freeze_nodes}")
             ##################################################################
 
     def _check_data(self):
@@ -562,7 +572,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         # parse metric_nodes
         metric_nodes = raw_config['metadata'].get('metric_nodes', None)
 
-        graph = DesicionGraph(graph_dict, raw_columns, fit, metric_nodes)
+        graph = DesicionGraph(graph_dict, raw_columns, fit, metric_nodes, self.use_step_node)
         # copy the raw columns for transition variables to allow them as input to other nodes
         for curr_name, next_name in graph.transition_map.items():
             raw_columns[next_name] = raw_columns[curr_name]
@@ -570,7 +580,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         # mark tunable parameters
         for node_name in raw_config['metadata'].get('tunable', []): graph.mark_tunable(node_name)
         
-        expert_functions = raw_config['metadata'].get('expert_functions', None)
+        # expert_functions = raw_config['metadata'].get('expert_functions',{})
         custom_nodes = raw_config['metadata'].get('custom_nodes', None)
 
         def get_function_type(file_path : str, function_name : str) -> str:
@@ -590,8 +600,8 @@ class OfflineDataset(torch.utils.data.Dataset):
         later = find_later(self.config_file, 'data')
         head = '.'.join(later[:-1])
         # register expert functions to the graph
-        if expert_functions is not None:
-            for node_name, function_description in expert_functions.items():
+        if self.expert_functions is not None:
+            for node_name, function_description in self.expert_functions.items():
                 # NOTE: currently we assume the expert functions are also placed in the same folder as the yaml file.
                 if 'node_function' in function_description.keys(): # `node function` should be like [file].[function_name]`
                     graph.register_node(node_name, FunctionDecisionNode)

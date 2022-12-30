@@ -193,7 +193,11 @@
                 "type": "int",
                 "default": 1,
                 "search_mode": "grid",
-                "search_values": "[1,3,5]"
+                "search_values": [
+                    1,
+                    3,
+                    5
+                ]
             },
             {
                 "name": "d_steps",
@@ -201,7 +205,11 @@
                 "type": "int",
                 "default": 1,
                 "search_mode": "grid",
-                "search_values": "[1,3,5]"
+                "search_values": [
+                    1,
+                    3,
+                    5
+                ]
             },
             {
                 "name": "g_lr",
@@ -209,7 +217,10 @@
                 "type": "float",
                 "default": 4e-05,
                 "search_mode": "continuous",
-                "search_values": "[1e-06,0.0001]"
+                "search_values": [
+                    1e-06,
+                    0.0001
+                ]
             },
             {
                 "name": "d_lr",
@@ -217,7 +228,10 @@
                 "type": "float",
                 "default": 0.0006,
                 "search_mode": "continuous",
-                "search_values": "[1e-06,0.001]"
+                "search_values": [
+                    1e-06,
+                    0.001
+                ]
             },
             {
                 "name": "mae_reward_weight",
@@ -261,7 +275,11 @@
                 "type": "int",
                 "default": 4,
                 "search_mode": "grid",
-                "search_values": "[3,4,5]"
+                "search_values": [
+                    3,
+                    4,
+                    5
+                ]
             },
             {
                 "name": "policy_backbone",
@@ -270,7 +288,10 @@
                 "type": "str",
                 "default": "res",
                 "search_mode": "grid",
-                "search_values": "['mlp','res']"
+                "search_values": [
+                    "mlp",
+                    "res"
+                ]
             },
             {
                 "name": "g_lr",
@@ -278,7 +299,10 @@
                 "type": "float",
                 "default": 0.0001,
                 "search_mode": "continuous",
-                "search_values": "[1e-06,0.001]"
+                "search_values": [
+                    1e-06,
+                    0.001
+                ]
             },
             {
                 "name": "loss_type",
@@ -338,7 +362,10 @@
                 "type": "float",
                 "default": 4e-05,
                 "search_mode": "continuous",
-                "search_values": "[1e-06,0.001]"
+                "search_values": [
+                    1e-06,
+                    0.001
+                ]
             }
         ]
     }

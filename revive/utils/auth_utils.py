@@ -122,6 +122,11 @@ def customer_uploadTrainLog(trainId: str,
     return eval(response.text)
 
 def check_license(cls):
+    from io import StringIO
+    from wurlitzer import pipes, STDOUT
+    out = StringIO()
+    with pipes(stdout=out, stderr=STDOUT):
+        os.system("pyarmor hdinfo")
     try:
         REVIVE_LICENSE = os.getenv("REVIVE_LICENSE")
         sys.PYARMOR_LICENSE = REVIVE_LICENSE
@@ -133,7 +138,8 @@ def check_license(cls):
             logger.info(f"import revive.algo.venv.revive_p")
         except:
             if not isinstance(REVIVE_LICENSE, str):
-                logger.info(f"Don't find 'REVIVE_LICENSE' in environment variables.")
+                logger.warning(f"Don't find valid 'REVIVE_LICENSE' in environment variables. Please check.")
+                time.sleep(3)
                 raise NotImplementedError
             else:
                 try:
@@ -173,7 +179,7 @@ def check_license(cls):
         yamlNodeCount = len(cls.dataset.graph)
         yamlFileClientUrl = os.path.abspath(cls.config_file)
         configFileClientUrl = os.path.abspath(cls.revive_config_file_path)
-        logFileClientUrl = os.path.abspath(cls.log_path)
+        logFileClientUrl = os.path.abspath(cls.revive_log_path)
 
         config_folder = os.path.join(os.path.expanduser('~'),".revive")
         with open(os.path.join(config_folder,'config.yaml'), 'r', encoding='utf-8') as f:

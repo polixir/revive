@@ -202,6 +202,13 @@ DEFAULT_CONFIG = [
         'type' : int,
         'default' : 50,
     },   
+    {
+        'name' : 'plt_response_curve',
+        'abbreviation' : 'prc',
+        'description' : 'Whether to plot response curve at the end of venv training.',
+        'type' : bool,
+        'default' : False,
+    },   
 
     # policy related config
     {

@@ -73,7 +73,7 @@ class DataProcessor:
         for config, s, param in zip(data_config, processing_params['backward_slices'], processing_params['additional_parameters']):
             _data = data[..., s]
             if config['type'] == 'category':
-                values = torch.tensor(param.copy())
+                values = torch.tensor(param.copy()).to(_data)
                 _data = values[torch.argmax(_data, axis=-1)].float().to(data)
                 _data = _data.unsqueeze(-1)
                 processed_data.append(_data)

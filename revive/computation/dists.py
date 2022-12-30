@@ -25,6 +25,11 @@ import pyro
 from pyro.distributions.torch_distribution import TorchDistributionMixin
 from pyro.distributions.kl import register_kl, kl_divergence
 
+from itertools import groupby
+
+def all_equal(iterable):
+    g = groupby(iterable)
+    return next(g, True) and not next(g, False)
 
 def exportable_broadcast(tensor1 : torch.Tensor, tensor2 : torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     ''' Broadcast tensors to the same shape using onnx exportable operators '''
@@ -64,6 +69,7 @@ class ReviveDistribution(pyro.distributions.TorchDistribution, ReviveDistributio
 class ExportableNormal(Normal):
     def __init__(self, loc, scale, validate_args):
         self.loc, self.scale = exportable_broadcast(loc, scale)
+        # batch_shape = torch.Size(loc.shape[:-1])
         batch_shape = self.loc.size()
         super(Normal, self).__init__(batch_shape, validate_args=validate_args)
 
@@ -299,8 +305,8 @@ class MixDistribution(ReviveDistribution):
     
     def __init__(self, dists):
         super().__init__()
-        assert len(set([dist.batch_shape for dist in dists])) == 1, "the batch shape of all distributions should be equal"
-        assert len(set([len(dist.event_shape) == 1 for dist in dists])) == 1, "the event shape of all distributions should have length 1"
+        assert all_equal([dist.batch_shape for dist in dists]), "the batch shape of all distributions should be equal"
+        assert all_equal([len(dist.event_shape) == 1 for dist in dists]), "the event shape of all distributions should have length 1"
         self.dists = dists
         self.sizes = [dist.event_shape[0] for dist in self.dists]
         batch_shape = self.dists[0].batch_shape
