@@ -16,7 +16,8 @@ import os
 import ray
 import json
 import time
-import torch
+import traceback
+import logging
 import warnings
 from ray import tune
 from loguru import logger
@@ -254,10 +255,23 @@ class Logger:
 def trial_str_creator(trial):
     return "{}_{}".format("ReviveLog", trial.trial_id)
 
+
+def catch_error(func):
+    '''push the training error message to data buffer'''
+    def wrapped_func(self, *args, **kwargs):
+        try:
+            return func(self, *args, **kwargs)
+        except Exception as e:
+            error_message = traceback.format_exc()
+            logger.error('Detect error:{}, Error Message: {}'.format(e,error_message))
+            self.logger.update.remote(key="task_state", value="End")
+    return wrapped_func
+
 class TuneVenvTrain(object):
-    def __init__(self, config, logger, command=None):       
+    def __init__(self, config, venv_logger, command=None): 
+        logger.add(config["revive_log_path"])        
         self.config = config
-        self.logger = logger
+        self.logger = venv_logger
         self.workspace = os.path.join(self.config["workspace"], 'venv_tune')
         if not os.path.exists(self.workspace):
             os.makedirs(self.workspace)
@@ -267,29 +281,46 @@ class TuneVenvTrain(object):
         self.config.update(self.algo.get_parameters(command))
         os.environ['TUNE_GLOBAL_CHECKPOINT_S'] = self.config['global_checkpoint_period']
 
-    def train(self,):
+    @catch_error
+    def train(self):
         from ray import tune
         self.logger.update.remote(key="task_state", value="Run")
 
         tune_params = self.algo.get_tune_parameters(self.config)
-        torchTrainable = self.algo.get_trainable(self.config)  # 动态获取该算法对应的trainable对象(适配tune.run)
+        trainer = self.algo.get_train_func(self.config)
+        
         # Seet the seed
         setup_seed(self.config["global_seed"])
-        # Set tune stop
-        tune_params["stop"] = SysStopper(workspace = self.config['workspace'])
-        tune_params["trial_name_creator"] = trial_str_creator
-        tune_params["metric"] = "mean_accuracy"
-        tune_params["mode"] = "max"
-        analysis = tune.run(torchTrainable, **tune_params)
-        # best_df = analysis.dataframe(metric="mean_accuracy", mode="max")
-        # best_config = analysis.get_best_config(metric="mean_accuracy", mode="max")
+
+        tune_config = {"mode" : "max",
+                       "metric" : "mean_accuracy",
+                       "search_alg" : tune_params["search_alg"],
+                       "num_samples" : tune_params["num_samples"],
+                       "reuse_actors" : tune_params["reuse_actors"]}
+        
+        run_config = {"name" : tune_params["name"],
+                      "local_dir": tune_params["local_dir"],
+                      "stop" : SysStopper(workspace = self.config['workspace']),
+                      "callbacks" : tune_params["callbacks"],
+                      "verbose": tune_params["verbose"]}
+        _tuner_kwargs = {"trial_name_creator" : trial_str_creator, 
+                         "resources_per_trial":{"cpu": 1, "gpu": self.config['venv_gpus_per_worker']},
+                         "progress_reporter":tune_params["progress_reporter"]}
+
+        tuner = tune.Tuner(
+            trainer,
+            tune_config=tune.TuneConfig(**tune_config),
+            run_config=ray.air.config.RunConfig(**run_config),
+            _tuner_kwargs = _tuner_kwargs)
+        results = tuner.fit()
         self.logger.update.remote(key="task_state", value="End")
 
 
 class TunePolicyTrain(object):
-    def __init__(self, config, logger, venv_logger=None, command=None):     
+    def __init__(self, config, policy_logger, venv_logger=None, command=None):
+        logger.add(config["revive_log_path"])     
         self.config = config
-        self.logger = logger
+        self.logger = policy_logger
         self.venv_logger = venv_logger
         self.workspace = os.path.join(self.config["workspace"], 'policy_tune')
         if not os.path.exists(self.workspace):
@@ -300,6 +331,7 @@ class TunePolicyTrain(object):
         self.config.update(self.algo.get_parameters(command))
         os.environ['TUNE_GLOBAL_CHECKPOINT_S'] = self.config['global_checkpoint_period']
 
+    @catch_error
     def train(self,):
         if self.venv_logger is not None:
             while True: # block until venv train finish
@@ -307,37 +339,49 @@ class TunePolicyTrain(object):
                 if log.get('task_state') == 'End':
                     break
                 time.sleep(10)
-
-        while True: # block until venv available
-            if os.path.exists(os.path.join(self.config['workspace'], 'env.pkl')):
-                break
-            else:
-                logger.error(f"Don't find env model.")
-                import sys
-                sys.exit()
+        if not os.path.exists(os.path.join(self.config['workspace'], 'env.pkl')):
+            logger.error(f"Don't find env model.")
+            import sys
+            sys.exit()
+        
         from ray import tune
         self.logger.update.remote(key="task_state", value="Run")
 
         tune_params = self.algo.get_tune_parameters(self.config)
-        torchTrainable = self.algo.get_trainable(self.config)  # 动态获取该算法对应的trainable对象(适配tune.run)
+        trainer = self.algo.get_train_func(self.config)
+        
         # Seet the seed
         setup_seed(self.config["global_seed"])
-        # Set tune stop
-        tune_params["stop"] = SysStopper(workspace = self.config['workspace'])
-        tune_params["trial_name_creator"] = trial_str_creator
-        tune_params["metric"] = "mean_accuracy"
-        tune_params["mode"] = "max"
-        analysis = tune.run(torchTrainable, **tune_params)
+
+        tune_config = {"mode" : "max",
+                       "metric" : "mean_accuracy",
+                       "search_alg" : tune_params["search_alg"],
+                       "num_samples" : tune_params["num_samples"],
+                       "reuse_actors" : tune_params["reuse_actors"]}
         
-        # best_df = analysis.dataframe(metric="mean_accuracy", mode="max")
-        # best_config = analysis.get_best_config(metric="mean_accuracy", mode="max")
+        run_config = {"name" : tune_params["name"],
+                      "local_dir": tune_params["local_dir"],
+                      "stop" : SysStopper(workspace = self.config['workspace']),
+                      "callbacks" : tune_params["callbacks"],
+                      "verbose": tune_params["verbose"]}
+        _tuner_kwargs = {"trial_name_creator" : trial_str_creator, 
+                         "resources_per_trial":{"cpu": 1, "gpu": self.config['policy_gpus_per_worker']},
+                         "progress_reporter":tune_params["progress_reporter"]}
+
+        tuner = tune.Tuner(
+            trainer,
+            tune_config=tune.TuneConfig(**tune_config),
+            run_config=ray.air.config.RunConfig(**run_config),
+            _tuner_kwargs = _tuner_kwargs)
+        results = tuner.fit()
         self.logger.update.remote(key="task_state", value="End")
 
 
 class VenvTrain(object):
-    def __init__(self, config, logger, command=None):
+    def __init__(self, config, venv_logger, command=None):
+        logger.add(config["revive_log_path"])  
         self.config = config
-        self.logger = logger
+        self.logger = venv_logger
         self.workspace = os.path.join(self.config["workspace"], 'venv_train')
         if not os.path.exists(self.workspace):
             os.makedirs(self.workspace)
@@ -346,6 +390,7 @@ class VenvTrain(object):
             update_description(self.algo.operator.PARAMETER_DESCRIPTION, config['venv_algo_config'][self.config['venv_algo']])
         self.config.update(self.algo.get_parameters(command))
 
+    @catch_error
     def train(self):
         self.logger.update.remote(key="task_state", value="Run")
         trainer = self.algo.get_trainer(self.config)  # 动态获取该算法对应的trainer对象
@@ -358,9 +403,10 @@ class VenvTrain(object):
 
 
 class PolicyTrain(object):
-    def __init__(self, config, logger, venv_logger=None, command=None):
+    def __init__(self, config, policy_logger, venv_logger=None, command=None):
+        logger.add(config["revive_log_path"])  
         self.config = config
-        self.logger = logger
+        self.logger = policy_logger
         self.venv_logger = venv_logger
         self.workspace = os.path.join(self.config["workspace"], 'policy_train')
         if not os.path.exists(self.workspace):
@@ -370,6 +416,7 @@ class PolicyTrain(object):
             update_description(self.algo.operator.PARAMETER_DESCRIPTION, config['policy_algo_config'][self.config['policy_algo']])
         self.config.update(self.algo.get_parameters(command))
 
+    @catch_error
     def train(self):
         if self.venv_logger is not None:
             while True: # block until venv train finish

@@ -13,10 +13,11 @@
     Lesser General Public License for more details.
 """
 import os
+import sys
 import json
 import torch
 import numpy as np
-from typing import Dict
+from typing import Dict, List
 from collections import defaultdict
 from torch.utils.tensorboard import SummaryWriter
 from ray.tune.logger import LoggerCallback, CSVLoggerCallback, JsonLoggerCallback
@@ -92,6 +93,15 @@ def get_tune_callbacks():
     TUNELOGGERCallbacks = [callback() for callback in TUNELOGGERCallbacks] 
 
     return TUNELOGGERCallbacks
+
+from ray.tune import CLIReporter as _CLIReporter
+
+class CLIReporter(_CLIReporter):
+    
+    def report(self, trials: List, done: bool, *sys_info: Dict):
+        message = self._progress_str(trials, done, *sys_info)
+        from loguru import logger
+        logger.info(f"{message}")
 
 import logging, copy
 from ray.tune.search import BasicVariantGenerator, SearchGenerator, Searcher
@@ -192,3 +202,62 @@ class CustomBasicVariantGenerator(BasicVariantGenerator):
             self._iterators.append(iterator)
             self._trial_generator = itertools.chain(self._trial_generator,
                                                     iterator)
+            
+from zoopt.parameter import ToolFunction
+from ray.tune.search.zoopt.zoopt_search import DEFAULT_METRIC, Solution, zoopt
+from ray.tune.search.zoopt import ZOOptSearch as _ZOOptSearch
+
+class Parameter(zoopt.Parameter):
+    def __init__(self, *args, **kwargs):
+        self.parallel_num = kwargs.pop('parallel_num')
+        super(Parameter, self).__init__(*args, **kwargs)
+    
+    def auto_set(self, budget):
+        """
+        Set train_size, positive_size, negative_size by following rules:
+            budget < 3 --> error;
+            budget < 3 --> train_size = p, positive_size = (0.2*self.parallel_num);
+
+        :param budget: number of calls to the objective function
+        :return: no return value
+        """
+        if budget < 3:
+            ToolFunction.log('parameter.py: budget too small')
+            sys.exit(1)
+        else:
+            self.__train_size = self.parallel_num
+            self.__positive_size = max(int(0.2 * self.parallel_num),1)
+        self.__negative_size = self.__train_size - self.__positive_size
+
+
+class ZOOptSearch(_ZOOptSearch):
+    def _setup_zoopt(self):
+        if self._metric is None and self._mode:
+            # If only a mode was passed, use anonymous metric
+            self._metric = DEFAULT_METRIC
+
+        _dim_list = []
+        for k in self._dim_dict:
+            self._dim_keys.append(k)
+            _dim_list.append(self._dim_dict[k])
+
+        init_samples = None
+        if self._points_to_evaluate:
+            logger.warning(
+                "`points_to_evaluate` is ignored by ZOOpt in versions <= 0.4.1."
+            )
+            init_samples = [
+                Solution(x=tuple(point[dim] for dim in self._dim_keys))
+                for point in self._points_to_evaluate
+            ]
+        dim = zoopt.Dimension2(_dim_list)
+        par = Parameter(budget=self._budget, init_samples=init_samples,parallel_num=self.parallel_num)
+        if self._algo == "sracos" or self._algo == "asracos":
+            from zoopt.algos.opt_algorithms.racos.sracos import SRacosTune
+
+            self.optimizer = SRacosTune(
+                dimension=dim,
+                parameter=par,
+                parallel_num=self.parallel_num,
+                **self.kwargs
+            )

@@ -16,7 +16,8 @@
 import torch
 import warnings
 from torch import nn
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Dict
+from collections import OrderedDict
 
 from revive.computation.dists import *
 from revive.computation.utils import *
@@ -309,29 +310,107 @@ class DistributionWrapper(nn.Module):
 # --------------------------------- Policies -------------------------------- #
 class FeedForwardPolicy(torch.nn.Module):
     def __init__(self, 
-                 in_features : int, 
+                 in_features : Union[int, dict], 
                  out_features : int, 
                  hidden_features : int, 
                  hidden_layers : int, 
                  dist_config : list,
                  norm : str = None, 
                  hidden_activation : str = 'leakyrelu', 
-                 backbone_type : Union[str, np.str_] = 'mlp'):
+                 backbone_type : Union[str, np.str_] = 'mlp',
+                 use_multihead : bool = False,
+                 use_feature_embed : bool = False):
         super().__init__()
+        self.multihead = []
+        self.dist_config = dist_config
+        self.feature_embed_layers = OrderedDict()
 
-        if backbone_type == 'mlp':
-            self.backbone = MLP(in_features, out_features, hidden_features, hidden_layers, norm, hidden_activation)
-        elif backbone_type == 'res':
-            self.backbone = ResNet(in_features, out_features, hidden_features, hidden_layers, norm)
-        elif backbone_type == 'transformer':
-            self.backbone = Transformer1D(in_features, out_features, hidden_features, transformer_layers=hidden_layers)
+        if use_feature_embed:
+            embed_dim = 64
+            for input_name in sorted(in_features.keys()):
+                self.feature_embed_layers[input_name] = MLP(in_features[input_name], embed_dim, 64, 1, norm=None, hidden_activation='leakyrelu')
+            in_features = embed_dim * len(in_features.keys())
+
+        if not use_multihead:
+            if backbone_type == 'mlp':
+                self.backbone = MLP(in_features, out_features, hidden_features, hidden_layers, norm, hidden_activation)
+            elif backbone_type == 'res':
+                self.backbone = ResNet(in_features, out_features, hidden_features, hidden_layers, norm)
+            elif backbone_type == 'transformer':
+                self.backbone = Transformer1D(in_features, out_features, hidden_features, transformer_layers=hidden_layers)
+            else:
+                raise NotImplementedError(f'backbone type {backbone_type} is not supported')
         else:
-            raise NotImplementedError(f'backbone type {backbone_type} is not supported')
+            if backbone_type == 'mlp':
+                self.backbone = MLP(in_features, hidden_features, hidden_features, hidden_layers, norm, hidden_activation)
+            elif backbone_type == 'res':
+                self.backbone = ResNet(in_features, hidden_features, hidden_features, hidden_layers, norm)
+            elif backbone_type == 'transformer':
+                self.backbone = Transformer1D(in_features, hidden_features, hidden_features, transformer_layers=hidden_layers)
+            else:
+                raise NotImplementedError(f'backbone type {backbone_type} is not supported')
+        
+            
+            for dist in self.dist_config:
+                dist_type = dist["type"]
+                output_dim = dist["output_dim"] 
+                if dist_type == "onehot" or dist_type == "discrete_logistic":
+                    self.multihead.append(MLP(hidden_features, output_dim, 64, 1, norm=None, hidden_activation='leakyrelu')) 
+                elif dist_type == "normal":
+                    normal_dim = dist["dim"]
+                    for dim in range(normal_dim):  
+                        self.multihead.append(MLP(hidden_features, int(output_dim // normal_dim), 64, 1, norm=None, hidden_activation='leakyrelu')) 
+                else:
+                    raise NotImplementedError(f'Dist type {dist_type} is not supported in multihead.')
+                
+            self.multihead = nn.ModuleList(self.multihead)
 
         self.dist_wrapper = DistributionWrapper('mix', dist_config=dist_config)
+        
 
-    def forward(self, state : torch.Tensor, adapt_std : Optional[torch.Tensor] = None) -> ReviveDistribution:
-        output = self.backbone(state)
+    def forward(self, state : Union[torch.Tensor, Dict[str, torch.Tensor]], adapt_std : Optional[torch.Tensor] = None) -> ReviveDistribution:
+        if self.feature_embed_layers:
+            assert isinstance(state, dict), f"state must be dict, not {type(state)}, if you use node embedding"
+            total_embeddings = []
+            for key in self.feature_embed_layers:
+                total_embeddings.append(self.feature_embed_layers[key](state[key]))
+            state = torch.cat(total_embeddings, dim=-1)
+
+        if not self.multihead:
+            output = self.backbone(state)
+        else:
+            backbone_output = self.backbone(state) 
+            multihead_output = []
+            multihead_index = 0
+            for dist in self.dist_config:
+                dist_type = dist["type"]
+                output_dim = dist["output_dim"] 
+                if dist_type == "onehot" or dist_type == "discrete_logistic":
+                    multihead_output.append(self.multihead[multihead_index](backbone_output))
+                    multihead_index += 1
+                elif dist_type == "normal":
+                    normal_mode_output = []
+                    normal_std_output = []
+                    for head in self.multihead[multihead_index:]:
+                        head_output = head(backbone_output)
+                        if head_output.shape[-1] == 1:
+                            mode = head_output
+                            normal_mode_output.append(mode)
+                        else:
+                            mode, std = torch.chunk(head_output, 2, axis=-1)
+                            normal_mode_output.append(mode)
+                            normal_std_output.append(std)          
+                    normal_output = torch.cat(normal_mode_output, axis=-1)
+                    if normal_std_output:
+                        normal_std_output = torch.cat(normal_std_output, axis=-1)
+                        normal_output = torch.cat([normal_output, normal_std_output], axis=-1)
+                        
+                    multihead_output.append(normal_output)
+                    break
+                else:
+                    raise NotImplementedError(f'Dist type {dist_type} is not supported in multihead.')                
+            output = torch.cat(multihead_output, axis= -1)
+                        
         dist = self.dist_wrapper(output, adapt_std)
         if hasattr(self, "dist_mu_shift"):
             dist = dist.shift(self.dist_mu_shift)
@@ -342,9 +421,15 @@ class FeedForwardPolicy(torch.nn.Module):
         pass
     
     @torch.no_grad()
-    def get_action(self, state : torch.Tensor, deterministic : bool = True):
+    def get_action(self, state : Union[torch.Tensor, Dict[str, torch.Tensor]], deterministic : bool = True):
         dist = self(state)
         return dist.mode if deterministic else dist.sample()
+
+    def to(self, device):
+        super(FeedForwardPolicy, self).to(device)
+        for key in self.feature_embed_layers:
+            self.feature_embed_layers[key].to(device)
+        return self
 
 class RecurrentPolicy(torch.nn.Module):
     def __init__(self, 
@@ -410,7 +495,7 @@ class ContextualPolicy(torch.nn.Module):
 # ------------------------------- Transitions ------------------------------- #
 class FeedForwardTransition(FeedForwardPolicy):
     def __init__(self, 
-                 in_features : int, 
+                 in_features : Union[int, dict], 
                  out_features : int, 
                  hidden_features : int, 
                  hidden_layers : int, 
@@ -419,7 +504,8 @@ class FeedForwardTransition(FeedForwardPolicy):
                  hidden_activation : str = 'leakyrelu', 
                  backbone_type : Union[str, np.str_] = 'mlp',
                  mode : str = 'global',
-                 obs_dim : Optional[int] = None):
+                 obs_dim : Optional[int] = None,
+                 use_feature_embed : bool = False):
         
         self.mode = mode
         self.obs_dim = obs_dim
@@ -435,12 +521,12 @@ class FeedForwardTransition(FeedForwardPolicy):
         
 
         super(FeedForwardTransition, self).__init__(in_features, out_features, hidden_features, hidden_layers, 
-                                                    dist_config, norm, hidden_activation, backbone_type)
+                                                    dist_config, norm, hidden_activation, backbone_type, use_feature_embed=use_feature_embed)
 
     def reset(self):
         pass
 
-    def forward(self, state : torch.Tensor, adapt_std : Optional[torch.Tensor] = None) -> ReviveDistribution:
+    def forward(self, state : Union[torch.Tensor, Dict[str, torch.Tensor]], adapt_std : Optional[torch.Tensor] = None) -> ReviveDistribution:
         dist = super(FeedForwardTransition, self).forward(state, adapt_std)
         if self.mode == 'local' and self.obs_dim is not None:
             dist = dist.shift(state[..., :self.obs_dim])

@@ -1,3 +1,4 @@
+import os
 import json
 import argparse
 
@@ -19,7 +20,11 @@ def get_machine_info(output="./machine_info.json", online=False):
 
     out = StringIO()
     with pipes(stdout=out, stderr=STDOUT):
-        pyarmor_init()
+        try:
+            pyarmor_init()
+        except:
+            os.system("pyarmor hdinfo")
+            pyarmor_init()
         show_hd_info()
 
     lines = out.getvalue().split("\n")

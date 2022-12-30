@@ -13,7 +13,6 @@
     Lesser General Public License for more details.
 """
 
-import loguru
 import torch
 import warnings
 import numpy as np
@@ -106,10 +105,12 @@ class DesicionNode:
                 return action
 
         demo_inputs = {}
+        dynamic_axes={}
         for name, description in zip(self.input_names, self.input_descriptions):
-            demo_inputs[name] = torch.randn(len(description), dtype=torch.float32)
+            demo_inputs[name] = torch.randn(len(description), dtype=torch.float32).unsqueeze(0)
+            dynamic_axes[name] = [0]
         
-        torch.onnx.export(ExportHelper(), (demo_inputs,{}), onnx_file, verbose=verbose, input_names=self.input_names, output_names=[self.name], opset_version=11)
+        torch.onnx.export(ExportHelper(), (demo_inputs,{}), onnx_file, verbose=verbose, input_names=self.input_names, output_names=[self.name], dynamic_axes=dynamic_axes, opset_version=11)
 
     def __str__(self) -> str:
         info = []
@@ -126,6 +127,7 @@ class NetworkDecisionNode(DesicionNode):
     def __init__(self, name: str, input_names: List[str], input_descriptions: List[Dict[str, Dict[str, Any]]]):
         super().__init__(name, input_names, input_descriptions)
         self.network = None
+        self.use_feature_embed = False
 
     def set_network(self, network : torch.nn.Module):
         ''' set the network from a different source '''
@@ -136,7 +138,7 @@ class NetworkDecisionNode(DesicionNode):
         return self.network
 
     def initialize_network(self, 
-                           input_dim : int,
+                           input_dim : Union[int, dict],
                            output_dim : int,
                            hidden_features : int,
                            hidden_layers : int,
@@ -147,12 +149,18 @@ class NetworkDecisionNode(DesicionNode):
                            norm : str = None, 
                            transition_mode : Optional[str] = None,
                            obs_dim : Optional[int] = None,
+                           node_embed : bool = False,
                            *args, **kwargs):
 
         ''' initialize the network of this node '''
-
-        assert self.network is None, 'Cannot initialize one node twice!'
-
+        if self.network:
+            logger.warning("The node network has been initialized. Skip initialization")
+            return 
+        
+        if node_embed:
+            assert isinstance(input_dim, dict), "input_dim must be dict if you use node embedding"
+            self.use_feature_embed = True
+        
         if is_transition:
             if backbone_type in ['mlp', 'res', 'transformer']:
                 network = FeedForwardTransition(input_dim, output_dim,
@@ -162,8 +170,10 @@ class NetworkDecisionNode(DesicionNode):
                                                 dist_config=dist_config, 
                                                 backbone_type=backbone_type,
                                                 mode=transition_mode, 
-                                                obs_dim=obs_dim)
+                                                obs_dim=obs_dim,
+                                                use_feature_embed=self.use_feature_embed)
             elif backbone_type in ['gru', 'lstm']:
+                assert isinstance(input_dim, int), "assert isinstance(input_dim, int)"
                 network = RecurrentTransition(input_dim, output_dim,
                                               hidden_features, hidden_layers,
                                               dist_config, backbone_type=backbone_type,
@@ -177,12 +187,15 @@ class NetworkDecisionNode(DesicionNode):
                                             dist_config=dist_config,
                                             norm=norm, 
                                             hidden_activation=hidden_activation,
-                                            backbone_type=backbone_type)         
+                                            backbone_type=backbone_type,
+                                            use_feature_embed=self.use_feature_embed)         
             elif backbone_type in ['gru', 'lstm']:
+                assert isinstance(input_dim, int), "assert isinstance(input_dim, int)"
                 network = RecurrentPolicy(input_dim, output_dim,
                                           hidden_features, hidden_layers,
                                           dist_config, backbone_type)
             elif backbone_type in ['contextual_gru', 'contextual_lstm']:
+                assert isinstance(input_dim, int), "assert isinstance(input_dim, int)"
                 network = ContextualPolicy(input_dim, output_dim,
                                           hidden_features, hidden_layers,
                                           dist_config, backbone_type)
@@ -197,7 +210,7 @@ class NetworkDecisionNode(DesicionNode):
             NOTE: The input data was transferred by self.processor. You can use `self.processor.deprocess_torch(data)` to get the original data.
         '''
         data = self.get_inputs(data)
-        inputs = torch.cat([data[k] for k in self.input_names], dim=-1)
+        inputs = torch.cat([data[k] for k in self.input_names], dim=-1) if not self.use_feature_embed else data
         output_dist = self.network(inputs, *args, **kwargs) 
         return output_dist
         
@@ -309,7 +322,8 @@ class DesicionGraph:
                  graph_dict : Dict[str, List[str]], 
                  descriptions : Dict[str, List[Dict[str, Dict[str, Any]]]],
                  fit,
-                 metric_nodes,) -> None:
+                 metric_nodes,
+                 use_step_node) -> None:
         self.descriptions = descriptions
         self.graph_dict = self.sort_graph(graph_dict)
         self.fit = fit
@@ -320,6 +334,10 @@ class DesicionGraph:
         self.nodes = OrderedDict()
         for node_name in self.graph_dict.keys():
             self.nodes[node_name] = None
+
+        if use_step_node:
+            self.graph_dict['step_node_'] = ['step_node_']
+            self.nodes['step_node_'] = None
 
         if metric_nodes is None:
             self.metric_nodes = list(self.nodes.keys())
@@ -411,7 +429,11 @@ class DesicionGraph:
 
     def compute_node(self, node_name : str, inputs : Dict[str, torch.Tensor], use_target: bool = False, *args, **kwargs):
         '''compute the node by name'''
-        return self.get_node(node_name, use_target)(inputs, *args, **kwargs)
+        if node_name in self.freeze_nodes:
+            with torch.no_grad():
+                return self.get_node(node_name, use_target)(inputs, *args, **kwargs)
+        else:
+            return self.get_node(node_name, use_target)(inputs, *args, **kwargs)
 
     def get_relation_node_names(self) -> List[str]:
         ''' 
@@ -457,6 +479,35 @@ class DesicionGraph:
     def collect_models(self) -> List[torch.nn.Module]:
         '''return all the network that registered in this graph'''
         return [node.get_network() for node in self.nodes.values() if node.node_type == 'network']
+
+    def is_equal_venv(self, source_graph : 'DesicionGraph', policy_node) -> bool:
+        ''' check if new graph shares the same virtual environments  '''
+        
+        for node_name in self.nodes.keys():
+            target_node = self.get_node(node_name)
+            
+            if node_name == policy_node:            # do not judge policy node
+                continue
+
+            source_node = source_graph.get_node(node_name)
+
+            if target_node.node_type == "function": # do not judge env node with defined expert function
+                logger.warning(f'Detected "{node_name}" is attached with a expert function. Please check if it is RIGHT?!')
+                pass
+
+            if target_node.input_names != source_node.input_names:
+                logger.warning(f'Detected "{node_name}" is attached with different input names. Please check if it is RIGHT?!')
+                return False
+
+            if target_node.input_descriptions != source_node.input_descriptions:
+                logger.warning(f'Detected "{node_name}" is attached with different input descriptions. Please check if it is RIGHT?!')
+
+                return False
+            if target_node.node_type != source_node.node_type:
+                logger.warning(f'Detected "{node_name}" is attached with different input node_type. Please check if it is RIGHT?!')
+                return False
+
+        return True
 
     def is_equal_structure(self, source_graph : 'DesicionGraph') -> bool:
         ''' check if new graph shares the same structure '''
@@ -548,10 +599,10 @@ class DesicionGraph:
             for name in computed:
                 if name in input_names:
                     sorted_input_names.append(name)
+            sorted_input_names.sort()
             ordered_graph[output_name] = sorted_input_names
 
         assert self._is_sort_graph(ordered_graph), f"{ordered_graph}, graph is not correctly sorted!"
-
         return ordered_graph
 
     def _is_sort_graph(self, graph : OrderedDict) -> bool:
@@ -652,9 +703,10 @@ class DesicionGraph:
                 return tuple([actions[node_name] for node_name in graph.nodes.keys()])
 
         demo_inputs = {}
+        dynamic_axes={}
         for name in self.leaf:
             description = self.descriptions[name]
-            demo_inputs[name] = torch.randn(len(description), dtype=torch.float32)
+            demo_inputs[name] = torch.randn(len(description), dtype=torch.float32).unsqueeze(0)
+            dynamic_axes[name] = [0]
         
-
-        torch.onnx.export(ExportHelper(), (demo_inputs,{}), onnx_file, verbose=verbose, input_names=self.leaf, output_names=list(self.nodes.keys()), opset_version=11)
+        torch.onnx.export(ExportHelper(), (demo_inputs,{}), onnx_file, verbose=verbose, input_names=self.leaf, output_names=list(self.nodes.keys()), dynamic_axes=dynamic_axes, opset_version=11)

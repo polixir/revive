@@ -66,7 +66,7 @@ class PolicyTest:
             if render_path:
                 frames.append(env.render(mode="rgb_array"))
 
-            next_state, reward, done, info, _ = env.step(action)
+            next_state, reward, done, *_ = env.step(action)
             track_r.append(reward)
             cur_state = next_state
             cur_step += 1
@@ -106,7 +106,7 @@ class PolicyTest:
                 action = self(state)
 
                 dataset['action'].append(action)
-                state, reward, done, _, _ = env.step(action)
+                state, reward, done, *_ = env.step(action)
                 dataset['next_obs'].append(state)
                 dataset['rew'].append(reward)
                 dataset['done'].append(done)

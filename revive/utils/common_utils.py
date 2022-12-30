@@ -43,6 +43,10 @@ from copy import deepcopy
 from functools import partial
 from torch.utils.data.dataloader import DataLoader
 from typing import Any, Dict, List
+from collections import defaultdict
+import matplotlib.gridspec as gridspec
+import matplotlib.patches as mpatches
+from scipy import stats
 
 from revive.computation.graph import DesicionGraph
 from revive.computation.inference import *
@@ -236,6 +240,16 @@ def get_input_dim_from_graph(graph : DesicionGraph,
     for input_name in input_names:
         input_dim += total_dims[input_name]['input']
     return input_dim
+
+def get_input_dim_dict_from_graph(graph : DesicionGraph, 
+                             output_name : str, 
+                             total_dims : dict):
+    '''return the total number of dims used to compute the given node on the graph'''
+    input_names = graph[output_name]
+    input_dim_dict = dict()
+    for input_name in input_names:
+        input_dim_dict[input_name] = total_dims[input_name]['input']
+    return input_dim_dict
 
 def normalize(data):
     flatten_data = data.reshape((-1, data.shape[-1]))
@@ -550,7 +564,15 @@ def save_histogram(histogram_path : str, graph : DesicionGraph, data_loader : Da
         expert_data.append(expert_batch)
         generated_data.append(generated_batch)
     
-    expert_data = {node_name : np.concatenate([batch[node_name] for batch in expert_data], axis=1)  for node_name in graph.keys()}
+    # expert_data = {node_name : np.concatenate([batch[node_name] for batch in expert_data], axis=1)  for node_name in graph.keys()}
+    expert_data_tmp_dict = {}
+    for node_name in graph.keys():
+        try:
+            expert_data_tmp_dict[node_name] = np.concatenate([batch[node_name] for batch in expert_data], axis=1)
+        except Exception as e:
+            logger.warning(f"{e} not in dataset when plotting histogram")
+            continue
+    expert_data = expert_data_tmp_dict
     generated_data = {node_name : np.concatenate([batch[node_name] for batch in generated_data], axis=1)  for node_name in graph.keys()}
 
     expert_data = processor.deprocess(expert_data)
@@ -561,9 +583,12 @@ def save_histogram(histogram_path : str, graph : DesicionGraph, data_loader : Da
         index_name = node_name[5:] if node_name in graph.transition_map.values() else node_name
         for i, dimension in enumerate(graph.descriptions[index_name]):
             dimension_name = list(dimension.keys())[0]
-            expert_dimension_data = expert_data[node_name][..., i].reshape((-1))
             generated_dimension_data = generated_data[node_name][..., i].reshape((-1))
-            assert expert_dimension_data.shape == generated_dimension_data.shape
+            try:
+                expert_dimension_data = expert_data[node_name][..., i].reshape((-1))
+                assert expert_dimension_data.shape == generated_dimension_data.shape
+            except:
+                expert_dimension_data = None
 
             if dimension[dimension_name]['type'] == 'continuous':
                 bins = 100
@@ -573,7 +598,10 @@ def save_histogram(histogram_path : str, graph : DesicionGraph, data_loader : Da
                 bins = None
                 
             title = f'{node_name}.{dimension_name}'
-            plt.hist([expert_dimension_data, generated_dimension_data], bins=bins, label=['History_Data', 'Generated_Data'], log=True)
+            if expert_dimension_data is not None:
+                plt.hist([expert_dimension_data, generated_dimension_data], bins=bins, label=['History_Data', 'Generated_Data'], log=True)
+            else:
+                plt.hist(generated_dimension_data, bins=bins, label='Generated_Data', log=True)
             plt.legend(loc='upper left')
             plt.xlabel(title)
             plt.ylabel("frequency")
@@ -664,31 +692,56 @@ def plt_double_venv_validation(tensorboard_log_dir, reward_train, reward_val, im
 
 def _plt_node_rollout(expert_datas, generated_datas, node_name, data_dims, img_save_dir):
     sub_fig_num = len(data_dims)
-    for trj_index, (expert_data, generated_data) in enumerate(zip(expert_datas, generated_datas)):
-        img_save_path = os.path.join(img_save_dir,f"{trj_index}_{node_name}")
-        if sub_fig_num > 1:
-            fig, axs = plt.subplots(sub_fig_num, 1, figsize=(15, 5*sub_fig_num))
-            fig.suptitle("Policy Rollout", fontsize=26)
-            for index,dim in enumerate(data_dims):
-                axs[index].plot(expert_data[:,index], 'r--', label='History Expert Data')
-                axs[index].plot(generated_data[:,index], 'g--', label='Policy Rollout Data')
+    if expert_datas is not None:
+        for trj_index, (expert_data, generated_data) in enumerate(zip(expert_datas, generated_datas)):
+            img_save_path = os.path.join(img_save_dir,f"{trj_index}_{node_name}")
+            if sub_fig_num > 1:
+                fig, axs = plt.subplots(sub_fig_num, 1, figsize=(15, 5*sub_fig_num))
+                fig.suptitle("Policy Rollout", fontsize=26)
+                for index,dim in enumerate(data_dims):
+                    axs[index].plot(expert_data[:,index], 'r--', label='History Expert Data')
+                    axs[index].plot(generated_data[:,index], 'g--', label='Policy Rollout Data')
 
-                axs[index].set_ylabel(dim)
-                axs[index].set_xlabel('Step')
-                axs[index].legend()
-            fig.savefig(img_save_path)
-            plt.close(fig)
-        else:
-            fig = plt.figure(figsize=(15, 5))
-            plt.plot(expert_data, 'r--', label='History Expert Data')
-            plt.plot(generated_data, 'g--', label='Policy Rollout Data')
+                    axs[index].set_ylabel(dim)
+                    axs[index].set_xlabel('Step')
+                    axs[index].legend()
+                fig.savefig(img_save_path)
+                plt.close(fig)
+            else:
+                fig = plt.figure(figsize=(15, 5))
+                plt.plot(expert_data, 'r--', label='History Expert Data')
+                plt.plot(generated_data, 'g--', label='Policy Rollout Data')
 
-            plt.ylabel(data_dims[0])
-            plt.xlabel('Step')
-            plt.title("Policy Rollout")
-            plt.legend()
-            plt.savefig(img_save_path)
-            plt.close(fig)
+                plt.ylabel(data_dims[0])
+                plt.xlabel('Step')
+                plt.title("Policy Rollout")
+                plt.legend()
+                plt.savefig(img_save_path)
+                plt.close(fig)
+    else:
+        for trj_index, generated_data in enumerate(generated_datas):
+            img_save_path = os.path.join(img_save_dir,f"{trj_index}_{node_name}")
+            if sub_fig_num > 1:
+                fig, axs = plt.subplots(sub_fig_num, 1, figsize=(15, 5*sub_fig_num))
+                fig.suptitle("Policy Rollout", fontsize=26)
+                for index,dim in enumerate(data_dims):
+                    axs[index].plot(generated_data[:,index], 'g--', label='Policy Rollout Data')
+
+                    axs[index].set_ylabel(dim)
+                    axs[index].set_xlabel('Step')
+                    axs[index].legend()
+                fig.savefig(img_save_path)
+                plt.close(fig)
+            else:
+                fig = plt.figure(figsize=(15, 5))
+                plt.plot(generated_data, 'g--', label='Policy Rollout Data')
+
+                plt.ylabel(data_dims[0])
+                plt.xlabel('Step')
+                plt.title("Policy Rollout")
+                plt.legend()
+                plt.savefig(img_save_path)
+                plt.close(fig)
 
 def save_rollout_action(rollout_save_path: str,
                         graph: DesicionGraph, 
@@ -724,35 +777,64 @@ def save_rollout_action(rollout_save_path: str,
         generated_data.append(generated_batch)
         break
     
-    expert_data = {node_name : np.concatenate([batch[node_name] for batch in expert_data], axis=1)  for node_name in nodes_map.keys()}
+    # expert_data = {node_name : np.concatenate([batch[node_name] for batch in expert_data if node_name in batch.keys()], axis=1)  for node_name in nodes_map.keys()}
+    expert_data_tmp_dict = {}
+    for node_name in nodes_map.keys():
+        try:
+            expert_data_tmp_dict[node_name] = np.concatenate([batch[node_name] for batch in expert_data], axis=1)
+        except Exception as e:
+            logger.warning(f"{e} not in dataset when plotting rollout")
+            continue
+    expert_data = expert_data_tmp_dict
     generated_data = {node_name : np.concatenate([batch[node_name] for batch in generated_data], axis=1)  for node_name in nodes_map.keys()}
     
+    # deprocess all data 
+    expert_data = processor.deprocess(expert_data)
+    generated_data = processor.deprocess(generated_data)
+
     # del ts_node in nodes_map
+    if dataset.ts_node_frames:
+        ts_nodes_map = {}
+        for k, v in dataset.ts_node_frames.items():
+            ts_nodes_map[k] = nodes_map[k][-len(nodes_map[k])//v:]
+            if 'next_' + k in nodes_map.keys():
+                ts_nodes_map['next_' + k] = nodes_map['next_' + k][-len(nodes_map['next_' + k])//v:]
+        nodes_map.update(ts_nodes_map)
+        
     if graph.ts_nodes:
         for ts_node,node in graph.ts_nodes.items():
-            if "next_" + ts_node in nodes_map.keys():
-                nodes_map.pop("next_" + ts_node)
             if ts_node in nodes_map.keys():
                 if node in nodes_map.keys():
                     expert_data.pop(ts_node)
                     generated_data.pop(ts_node)
                 else:
-                    nodes_map[node] = [c[c.index("_")+1:]for c in nodes_map[ts_node][-len(nodes_map[ts_node])//graph.ts_node_frames[ts_node]:]]
-                    expert_data[node] = expert_data[ts_node][:,-len(nodes_map[node]):]
-                    generated_data[node] = generated_data[ts_node][:,-len(nodes_map[node]):]
-            if ts_node in nodes_map.keys():
-                nodes_map.pop(ts_node)
-    # #
-    expert_data = processor.deprocess(expert_data)
-    generated_data = processor.deprocess(generated_data)
+                    nodes_map[node] = [c[c.index("_")+1:]for c in nodes_map[ts_node]]
+                    expert_data[node] = expert_data[ts_node][...,-len(nodes_map[node]):]
+                    generated_data[node] = generated_data[ts_node][...,-len(nodes_map[node]):]
+                    nodes_map.pop(ts_node)
+
+            if "next_" + ts_node in nodes_map.keys():
+                if "next_" + node in nodes_map.keys():
+                    expert_data.pop("next_" + ts_node)
+                    generated_data.pop("next_" +ts_node)
+                else:
+                    nodes_map["next_" +node] = [c[c.index("_")+1:]for c in nodes_map["next_" +ts_node]]
+                    expert_data["next_" +node] = expert_data["next_" +ts_node][...,-len(nodes_map["next_" + node]):]
+                    generated_data["next_" +node] = generated_data["next_" +ts_node][...,-len(nodes_map["next_" + node]):]
+                    nodes_map.pop("next_" +ts_node)
 
     #select_indexs = np.random.choice(np.arange(expert_data[list(nodes.keys())[0]].shape[1]), size=10, replace=False)
 
-    for node_name,node_dims in nodes_map.items():
-        horizion_num = min(horizion_num, expert_data.shape[1])
-        expert_action_data = expert_data[node_name]
+    horizion_num = min(horizion_num, expert_data.shape[1])
+    for node_name, node_dims in nodes_map.items():
+        try:
+            expert_action_data = expert_data[node_name]
+            select_expert_action_data = [expert_action_data[:,index] for index in range(horizion_num)]
+        except Exception as e:
+            logger.warning(f"{e} not in dataset when plotting rollout")
+            select_expert_action_data = None
+
         generated_action_data = generated_data[node_name]
-        select_expert_action_data = [expert_action_data[:,index] for index in range(horizion_num)]
         select_generated_action_data = [generated_action_data[:,index] for index in range(horizion_num)]
 
         node_rollout_save_path = os.path.join(rollout_save_path, node_name)
@@ -921,10 +1003,17 @@ def net_to_tree(tree_save_path: str,
         if data_num> 20000:
             break
     data_keys = list(graph.keys()) + graph.leaf
-    expert_data = {node_name : np.concatenate([batch[node_name] for batch in expert_data], axis=1)  for node_name in data_keys}
-    generated_data = {node_name : np.concatenate([batch[node_name] for batch in generated_data], axis=1)  for node_name in data_keys}
+    # expert_data = {node_name : np.concatenate([batch[node_name] for batch in expert_data], axis=1)  for node_name in data_keys}
+    expert_data_tmp_dict = {}
+    for node_name in data_keys:
+        try:
+            val = np.concatenate([batch[node_name] for batch in expert_data], axis=1)
+            expert_data_tmp_dict[node_name] = val.reshape(-1, val.shape[-1])
+        except:
+            continue
+    expert_data = expert_data_tmp_dict
 
-    expert_data = {node_name:node_data.reshape(-1,node_data.shape[-1]) for node_name, node_data in expert_data.items()}
+    generated_data = {node_name : np.concatenate([batch[node_name] for batch in generated_data], axis=1)  for node_name in data_keys}
     generated_data = {node_name:node_data.reshape(-1,node_data.shape[-1]) for node_name, node_data in generated_data.items()}
     expert_data = processor.deprocess(expert_data)
     generated_data = processor.deprocess(generated_data)
@@ -958,6 +1047,162 @@ def net_to_tree(tree_save_path: str,
             Y_type.append("C" if i_type == 'category' else "R")
         
         result = data_to_dtreeviz(X,Y,Y_type, output=os.path.join(tree_save_path,output_node+".pdf"))
+
+def generate_response_inputs(expert_data: Batch, 
+                     dataset: Batch,
+                     graph: DesicionGraph, 
+                     obs_sample_num=16):
+
+    expert_data = deepcopy(expert_data)
+    all_input_nodes = set([item for sub_ls in graph.graph_dict.values() for item in sub_ls])
+    """
+    generated_inputs: Dict[str: Dict[tuple: np.ndarray]]
+    generated_inputs.keys(): ['obs', 'action', 'door_open', ...] --> the nodes appear in the input of any network node
+    generated_inputs['obs'].keys(): [(0, 0), ..., (0, 15), (1, 0), ..., (1, 15), ..., (obs_dim, 0), ..., (obs_dim, 15)] --> (data_dim_index, sub_graph_index)
+    generated_inputs['obs'][(0, 0)]: np.ndarray of shape (dim_sample_num, obs_dim) --> perturbated data
+
+    dim_perturbations: Dict[str: Dict[int: np.ndarray]]
+    dim_perturbations.keys(): ['obs', 'action', 'door_open', ...] --> the nodes appear in the input of any network node
+    dim_perturbations['obs'].keys(): [0, 1, ..., obs_dim]
+    dim_perturbations['obs'][0]: np.ndarray of shape (dim_sample_num, ) --> dim_perturbation --> as x-axis in plotting
+    """
+    generated_inputs = defaultdict(dict)
+    dim_perturbations = defaultdict(dict)
+
+    for node_name in all_input_nodes:
+        descriptions = graph.descriptions[node_name]
+        for dim, description in  enumerate(descriptions):
+            # generate fake data
+            # info = list(description.values())[0]
+            for _, info in description.items():
+                if info['type'] == 'continuous':
+                    dim_sample_num = 100
+                    dim_perturbation = np.linspace(info.get('min', dataset[node_name][:, dim].min()), info.get('max', dataset[node_name][:, dim].max()), num=dim_sample_num)
+                elif info['type'] == 'category':
+                    values = info['values']
+                    dim_sample_num = len(values)
+                    dim_perturbation = np.array(values)
+                elif info['type'] == 'discrete':
+                    assert isinstance(info, dict), "in discrete, assert isinstance(info, dict)"
+                    dim_sample_num = info['num']
+                    dim_perturbation = np.linspace(info['min'], info['max'], num=dim_sample_num)
+                else:
+                    raise NotImplementedError("data dim_type not match")
+
+                for index in range(obs_sample_num):
+                    inputs = deepcopy(expert_data[node_name][index])  # (dim, )
+                    inputs = np.repeat(np.expand_dims(inputs, axis=0), repeats=dim_sample_num, axis=0)  # (dim_sample_num, dim)
+                    inputs[:, dim] = dim_perturbation
+                    generated_inputs[node_name][(dim, index)] = inputs
+                    dim_perturbations[node_name][dim] = dim_perturbation
+
+    return generated_inputs, dim_perturbations
+
+def generate_response_outputs(generated_inputs: defaultdict, 
+                     expert_data: Batch, 
+                     venv_train: VirtualEnvDev,
+                     venv_val: VirtualEnvDev):
+
+    generated_inputs = deepcopy(generated_inputs)
+    """
+    generated_outputs: Dict[str: Dict[tuple: np.ndarray]]
+    generated_outputs.keys(): ['action', 'next_obs', ...] --> the nodes in graph.keys() whose node_type == 'network'
+    generated_outputs['next_obs'].keys(): [(0, 0, input_1), ..., (0, 0, input_n), 
+                                                (0, 1, input_1), ..., (0, 1, input_n),
+                                                ...,
+                                                (0, 15, input_1), ..., (0, 15, input_n),
+                                           (1, 0, input_1), ..., (1, 0, input_n),
+                                                (1, 1, input_1), ..., (1, 1, input_n),
+                                                ...,
+                                                (1, 15, input_1), ..., (1, 15, input_n),
+                                            ...,
+                                           (next_obs_dim, 0, input_1), ..., (next_obs_dim, 0, input_n),
+                                                (next_obs_dim, 1, input_1), ..., (next_obs_dim, 1, input_n),
+                                                ...,
+                                                (next_obs_dim, 15, input_1), ..., (next_obs_dim, 15, input_n)] --> (data_dim_index, sub_graph_index, each_input_name)
+    generated_outputs['next_obs'][(0, 0, input_1)]: np.ndarray of shape (dim_sample_num, next_obs_dim) --> outputs corresponding to each perturbated input
+    """
+    graph = venv_train.graph
+    generated_outputs_train = defaultdict(dict)
+    generated_outputs_val = defaultdict(dict)
+    with torch.no_grad():
+        for node_name in list(graph.keys()):
+            if graph.get_node(node_name).node_type == 'network':
+                input_names = graph.get_node(node_name).input_names
+                inputs_dict = graph.get_node(node_name).get_inputs(generated_inputs)  # Dict[str: Dict[tuple: np.ndarray]]
+                for input_name in input_names:
+                    for dim, index in list(inputs_dict[input_name].keys()):
+                        state_dict = {}
+                        state_dict[input_name] = inputs_dict[input_name][(dim, index)]
+                        state_dict.update({name: np.repeat(np.expand_dims(expert_data[name][index], axis=0), repeats=state_dict[input_name].shape[0], axis=0) 
+                                                for name in input_names if name != input_name})
+                        generated_outputs_train[node_name][(dim, index, input_name)] = venv_train.node_infer(node_name, state_dict)
+                        generated_outputs_val[node_name][(dim, index, input_name)] = venv_val.node_infer(node_name, state_dict)
+
+    return generated_outputs_train, generated_outputs_val
+
+def plot_response_curve(response_curve_path, graph_train, graph_val, dataset, device, obs_sample_num=16):
+    if not os.path.exists(response_curve_path):
+        os.makedirs(response_curve_path)
+
+    dataset = deepcopy(dataset)
+
+    graph_train.reset()
+    graph_train = deepcopy(graph_train)
+    venv_train = VirtualEnvDev(graph_train)
+    venv_train.to(device)
+
+    graph_val.reset()
+    graph_val = deepcopy(graph_val)
+    venv_val = VirtualEnvDev(graph_val)
+    venv_val.to(device)
+
+    indexes = np.random.choice(dataset.shape[0], size=(obs_sample_num, ), replace=False)
+    expert_data = dataset[indexes]  # numpy array
+
+    generated_inputs, dim_perturbations = generate_response_inputs(expert_data, dataset, graph_train, obs_sample_num)
+    generated_outputs_train, generated_outputs_val = generate_response_outputs(generated_inputs, expert_data, venv_train, venv_val)
+
+    obs_sample_num_per_dim = int(np.sqrt(obs_sample_num))
+    with torch.no_grad():
+        for node_name in list(graph_train.keys()):
+            if graph_train.get_node(node_name).node_type == 'network':
+                input_names = graph_train.get_node(node_name).input_names
+                output_dims = dataset[node_name].shape[-1]
+                for input_name in input_names:
+                    input_dims = dataset[input_name].shape[-1]
+                    # plot
+                    fig = plt.figure(figsize=(8 * input_dims, 10 * output_dims))  # (width, height)
+                    red_patch = mpatches.Patch(color='red', label='venv_train')
+                    blue_patch = mpatches.Patch(color='blue', label='venv_val')
+                    outer = gridspec.GridSpec(output_dims, input_dims, wspace=0.2, hspace=0.2)
+                    for output_dim in range(output_dims):
+                        for input_dim in range(input_dims):
+                            dim_perturbation = dim_perturbations[input_name][input_dim]
+                            outer_index = output_dim * input_dims + input_dim
+                            inner = gridspec.GridSpecFromSubplotSpec(obs_sample_num_per_dim, obs_sample_num_per_dim, subplot_spec=outer[outer_index], wspace=0.2, hspace=0.2)
+                            outer_ax = plt.Subplot(fig, outer[outer_index])
+                            outer_ax.axis('off')
+                            fig.add_subplot(outer_ax)
+                            mae = []
+                            corr = []
+                            for index in range(obs_sample_num):
+                                ax = plt.Subplot(fig, inner[index])
+                                if output_dim == 0 and input_dim == 0 and index == 0:
+                                    ax.legend(handles=[red_patch, blue_patch], loc="upper left")
+                                output_train = generated_outputs_train[node_name][(input_dim, index, input_name)][:, output_dim]
+                                output_val = generated_outputs_val[node_name][(input_dim, index, input_name)][:, output_dim]
+                                line1, = ax.plot(dim_perturbation, output_train, color='red')
+                                line2, = ax.plot(dim_perturbation, output_val, color='blue')
+                                fig.add_subplot(ax)
+                                mae.append(np.abs(output_train - output_val) / dim_perturbation.shape[0])
+                                corr.append(stats.spearmanr(output_train, output_val).correlation)
+                            outer_ax.set_title(f"{node_name}_dim: {output_dim}, {input_name}_dim: {input_dim}\nMAE: {np.sum(mae) / obs_sample_num:.2f}\nCorr: {np.sum(corr) / obs_sample_num:.2f}", )
+
+                    response_curve_node_path = os.path.join(response_curve_path, node_name)
+                    if not os.path.exists(response_curve_node_path):
+                        os.makedirs(response_curve_node_path)
+                    plt.savefig(os.path.join(response_curve_node_path, f"{node_name}_on_{input_name}.png"), bbox_inches='tight')
 
 
 

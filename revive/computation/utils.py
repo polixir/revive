@@ -57,6 +57,15 @@ def get_input_from_graph(graph,
         inputs.append(batch_data[input_name])
     return torch.cat(inputs, dim=-1)
 
+def get_input_dict_from_graph(graph, 
+                         output_name : str, 
+                         batch_data : Batch):
+    input_names = graph[output_name]
+    inputs = {}
+    for input_name in input_names:
+        inputs[input_name] = batch_data[input_name]
+    return inputs
+
 def get_sample_function(deterministic : bool) -> Callable[[ReviveDistribution], torch.Tensor]:
     if deterministic:
         sample_fn = lambda dist: dist.mode

@@ -26,7 +26,6 @@ from ray import tune
 from loguru import logger
 from copy import deepcopy
 from ray import train
-from ray.tune import CLIReporter
 from ray.train.torch import TorchTrainer
 from revive.utils.raysgd_utils import NUM_SAMPLES, AverageMeterCollection
 from revive.computation.inference import *
@@ -35,7 +34,7 @@ from revive.data.batch import Batch
 from revive.data.dataset import data_creator
 from ray.train.torch import TorchTrainer
 from revive.utils.common_utils import *
-from revive.utils.tune_utils import get_tune_callbacks, CustomSearchGenerator, CustomBasicVariantGenerator
+from revive.utils.tune_utils import get_tune_callbacks, CustomSearchGenerator, CustomBasicVariantGenerator, CLIReporter
 from revive.utils.auth_utils import customer_uploadTrainLog
 
 warnings.filterwarnings('ignore')
@@ -47,7 +46,7 @@ def catch_error(func):
             return func(self, *args, **kwargs)
         except Exception as e:
             error_message = traceback.format_exc()
-            logger.warning('Detect error:{}, Error Message: {}'.format(e,error_message))
+            logger.error('Detect error:{}, Error Message: {}'.format(e,error_message))
             ray.get(self._data_buffer.update_status.remote(self._traj_id, 'error', error_message))
             self._stop_flag = True
             try:
@@ -122,14 +121,10 @@ class PolicyOperator():
         r"""
         Use ray.tune to wrap the parameters to be searched.
         """
-        reporter = CLIReporter(max_progress_rows=50)
-        reporter.add_metric_column("reward_trainPolicy_on_valEnv")
-
         _search_algo = config['policy_search_algo'].lower()
 
         tune_params = {
             "name": "policy_tune",
-            "progress_reporter": reporter,
             "reuse_actors": config["reuse_actors"],
             "local_dir": config["workspace"],
             "callbacks": get_tune_callbacks(),
@@ -155,7 +150,8 @@ class PolicyOperator():
             tune_params['search_alg'] = CustomBasicVariantGenerator()
 
         elif _search_algo == 'zoopt':
-            from ray.tune.search.zoopt import ZOOptSearch
+            #from ray.tune.search.zoopt import ZOOptSearch
+            from revive.utils.tune_utils import ZOOptSearch
             from zoopt import ValueType
 
             if config['parallel_num'] == 'auto':
@@ -197,6 +193,7 @@ class PolicyOperator():
                 mode="max",
                 **zoopt_search_config
             )
+            tune_params['config'] = dim_dict
             tune_params['search_alg'] = CustomSearchGenerator(tune_params['search_alg'])  # wrap with our generator
             tune_params['num_samples'] = config["total_num_of_trials"]
 
@@ -215,16 +212,17 @@ class PolicyOperator():
                             f"If this parameter is important to the performance, you should consider other search algorithms. ")
 
             tune_params['config'] = grid_search_config
+            tune_params['num_samples'] = config["total_num_of_trials"]
             tune_params['search_alg'] = CustomBasicVariantGenerator()
 
         elif 'bayes' in _search_algo:
             from ray.tune.search.bayesopt import BayesOptSearch
-            bayes_search_space = {}
+            bayes_search_config = {}
 
             for description in cls.PARAMETER_DESCRIPTION:
                 if 'search_mode' in description.keys():
                     if description['search_mode'] == 'continuous': 
-                        bayes_search_space[description['name']] = description['search_values']
+                        bayes_search_config[description['name']] = description['search_values']
                     else:
                         warnings.warn(f"Detect parameter {description['name']} is define as searchable in `PARAMETER_DESCRIPTION`. " + \
                             f"However, since bayesian search does not support search type {description['search_mode']}, the parameter is skipped. " + \
@@ -232,12 +230,18 @@ class PolicyOperator():
             
             config["total_num_of_trials"] = config['train_policy_trials']
             
-            tune_params['search_alg'] = BayesOptSearch(bayes_search_space, metric="reward_trainPolicy_on_valEnv", mode="max") 
+            tune_params['config'] = bayes_search_config
+            tune_params['search_alg'] = BayesOptSearch(bayes_search_config, metric="reward_trainPolicy_on_valEnv", mode="max") 
             tune_params['search_alg'] = CustomSearchGenerator(tune_params['search_alg'])  # wrap with our generator
             tune_params['num_samples'] = config["total_num_of_trials"]
         
         else:
             raise ValueError(f'search algorithm {_search_algo} is not supported!')
+        
+        reporter = CLIReporter(parameter_columns=list(tune_params['config'].keys()), max_progress_rows=50, max_report_frequency=10, sort_by_metric=True)
+        reporter.add_metric_column("reward_trainPolicy_on_valEnv")
+        
+        tune_params["progress_reporter"] = reporter
 
         return tune_params
 
@@ -293,10 +297,16 @@ class PolicyOperator():
             self._val_loader_val = None
         else:
             train_loader_train, val_loader_train, train_loader_val, val_loader_val = self.data_creator(config)
-            self._train_loader_train = train.torch.prepare_data_loader(train_loader_train, move_to_device=False)
-            self._val_loader_train = train.torch.prepare_data_loader(val_loader_train, move_to_device=False)
-            self._train_loader_val = train.torch.prepare_data_loader(train_loader_val, move_to_device=False)
-            self._val_loader_val = train.torch.prepare_data_loader(val_loader_val, move_to_device=False)
+            try:
+                self._train_loader_train = train.torch.prepare_data_loader(train_loader_train, move_to_device=False)
+                self._val_loader_train = train.torch.prepare_data_loader(val_loader_train, move_to_device=False)
+                self._train_loader_val = train.torch.prepare_data_loader(train_loader_val, move_to_device=False)
+                self._val_loader_val = train.torch.prepare_data_loader(val_loader_val, move_to_device=False)
+            except:
+                self._train_loader_train = train_loader_train
+                self._val_loader_train = val_loader_train
+                self._train_loader_val = train_loader_val
+                self._val_loader_val = val_loader_val   
 
     def _setup_models(self, config : Dict[str, Any]):
         r'''setup models, optimizers and dataloaders.'''
@@ -305,7 +315,10 @@ class PolicyOperator():
             
             self.train_models = self.model_creator(config, self.train_nodes)
             for model_index, model in enumerate(self.train_models):
-                self.train_models[model_index] = train.torch.prepare_model(model)
+                try:
+                    self.train_models[model_index] = train.torch.prepare_model(model)
+                except:
+                    self.train_models[model_index] = model.to(self._device)
             self.train_optimizers = self.optimizer_creator(self.train_models, config)
 
             self.val_models = None
@@ -317,14 +330,20 @@ class PolicyOperator():
             self.train_nodes = {policy_name:deepcopy(self._graph.get_node(policy_name)) for policy_name in self.policy_name}
             self.train_models = self.model_creator(config, self.train_nodes)
             for model_index, model in enumerate(self.train_models):
-                self.train_models[model_index] = train.torch.prepare_model(model)
+                try:
+                    self.train_models[model_index] = train.torch.prepare_model(model)
+                except:
+                    self.train_models[model_index] = model.to(self._device)
             self.train_optimizers = self.optimizer_creator(self.train_models, config)
 
 
             self.val_nodes = {policy_name:deepcopy(self._graph.get_node(policy_name)) for policy_name in self.policy_name}
             self.val_models = self.model_creator(config, self.val_nodes)
             for model_index, model in enumerate(self.val_models):
-                self.val_models[model_index] = train.torch.prepare_model(model)
+                try:
+                    self.val_models[model_index] = train.torch.prepare_model(model)
+                except:
+                    self.val_models[model_index] = model.to(self._device)
             self.val_optimizers = self.optimizer_creator(self.val_models, config)
 
             for train_node,policy in zip(self.train_nodes.values(), self.policy):
@@ -707,7 +726,7 @@ class PolicyOperator():
                 else:
                     current_batch = env.pre_computation(current_batch, deterministic, clip, policy_index)
 
-                policy_input = get_input_from_graph(self._graph, policy_name, current_batch)
+                policy_input = get_input_dict_from_graph(self._graph, policy_name, current_batch) if self.config['policy_node_embed'] else get_input_from_graph(self._graph, policy_name, current_batch)
                 if 'offlinerl' in str(type(target_policy[policy_index])):
                     action = target_policy[policy_index](policy_input)
                     current_batch[policy_name] = action
@@ -1016,10 +1035,8 @@ class PolicyAlgorithm:
     
     def get_trainable(self, config):
         try:
-            train_func = self.get_train_func(config)
-            from ray.train import Trainer
-            trainer = Trainer(backend="torch", num_workers=config['workers_per_trial'], use_gpu=config['use_gpu'])
-            trainable = trainer.to_tune_trainable(train_func)
+            trainer = self.get_trainer(config)
+            trainable = trainer.as_trainable()
 
             return trainable 
         except Exception as e:

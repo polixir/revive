@@ -27,14 +27,13 @@ from loguru import logger
 from copy import deepcopy
 from ray import tune
 from ray import train
-from ray.tune import CLIReporter
 from ray.train.torch import TorchTrainer
 from revive.computation.graph import DesicionGraph
 from revive.computation.inference import *
 from revive.data.batch import Batch
 from revive.data.dataset import data_creator
 from revive.utils.raysgd_utils import NUM_SAMPLES, AverageMeterCollection
-from revive.utils.tune_utils import get_tune_callbacks, CustomSearchGenerator, CustomBasicVariantGenerator
+from revive.utils.tune_utils import get_tune_callbacks, CustomSearchGenerator, CustomBasicVariantGenerator, CLIReporter
 from revive.utils.common_utils import *
 from revive.utils.auth_utils import customer_uploadTrainLog
 
@@ -43,9 +42,11 @@ warnings.filterwarnings('ignore')
 def catch_error(func):
     '''push the training error message to data buffer'''
     def wrapped_func(self, *args, **kwargs):
-        try:
+        #try:
+        if True:
             return func(self, *args, **kwargs)
-        except Exception as e:
+        else:
+        #except Exception as e:
             error_message = traceback.format_exc()
             logger.warning('Detect error:{}, Error Message: {}'.format(e,error_message))
             ray.get(self._data_buffer.update_status.remote(self._traj_id, 'error', error_message))
@@ -111,15 +112,10 @@ class VenvOperator():
         r"""
         Use ray.tune to wrap the parameters to be searched.
         """
-        reporter = CLIReporter(max_progress_rows=50)
-        reporter.add_metric_column("least_metric", representation='least')
-        reporter.add_metric_column("now_metric", representation='current')
-
         _search_algo = config['venv_search_algo'].lower()
 
         tune_params = {
             "name": "venv_tune",
-            "progress_reporter": reporter,
             "reuse_actors": config["reuse_actors"],
             "local_dir": config["workspace"],
             "callbacks": get_tune_callbacks(),
@@ -147,7 +143,8 @@ class VenvOperator():
             tune_params['search_alg'] = CustomBasicVariantGenerator()
 
         elif _search_algo == 'zoopt':
-            from ray.tune.search.zoopt import ZOOptSearch
+            # from ray.tune.search.zoopt import ZOOptSearch
+            from revive.utils.tune_utils import ZOOptSearch
             from zoopt import ValueType
 
             if config['parallel_num'] == 'auto':
@@ -190,6 +187,7 @@ class VenvOperator():
                 mode="min",
                 **zoopt_search_config
             )
+            tune_params['config'] = dim_dict
             tune_params['search_alg'] = CustomSearchGenerator(tune_params['search_alg'])  # wrap with our generator
             tune_params['num_samples'] = config["total_num_of_trials"]
 
@@ -210,18 +208,19 @@ class VenvOperator():
                             f"If this parameter is important to the performance, you should consider other search algorithms. ")
 
             tune_params['config'] = grid_search_config
+            tune_params['num_samples'] = config["total_num_of_trials"]
             tune_params['search_alg'] = CustomBasicVariantGenerator()
 
         elif 'bayes' in _search_algo:
-            from ray.tune.suggest.bayesopt import BayesOptSearch
-            bayes_search_space = {}
+            from ray.tune.search.bayesopt import BayesOptSearch
+            bayes_search_config = {}
 
             for description in cls.PARAMETER_DESCRIPTION:
                 if 'tune' in description.keys() and not description["tune"]:
                     continue 
                 if 'search_mode' in description.keys():
                     if description['search_mode'] == 'continuous': 
-                        bayes_search_space[description['name']] = description['search_values']
+                        bayes_search_config[description['name']] = description['search_values']
                     else:
                         warnings.warn(f"Detect parameter {description['name']} is define as searchable in `PARAMETER_DESCRIPTION`. " + \
                             f"However, since bayesian search does not support search type {description['search_mode']}, the parameter is skipped. " + \
@@ -229,12 +228,19 @@ class VenvOperator():
             
             config["total_num_of_trials"] = config['train_venv_trials']
             
-            tune_params['search_alg'] = BayesOptSearch(bayes_search_space, metric="least_metric", mode="min") 
+            tune_params['config'] = bayes_search_config
+            tune_params['search_alg'] = BayesOptSearch(bayes_search_config, metric="least_metric", mode="min") 
             tune_params['search_alg'] = CustomSearchGenerator(tune_params['search_alg'])  # wrap with our generator
             tune_params['num_samples'] = config["total_num_of_trials"]
         
         else:
             raise ValueError(f'search algorithm {_search_algo} is not supported!')
+        
+        reporter = CLIReporter(parameter_columns=list(tune_params['config'].keys()), max_progress_rows=50, max_report_frequency=10, sort_by_metric=True)
+        reporter.add_metric_column("least_metric", representation='least metric loss')
+        reporter.add_metric_column("now_metric", representation='current metric loss')
+        
+        tune_params["progress_reporter"] = reporter
 
         return tune_params
 
@@ -283,19 +289,31 @@ class VenvOperator():
 
         # register data loader for double venv training
         train_loader_train, val_loader_train, train_loader_val, val_loader_val = self.data_creator(config)
-        self._train_loader_train = train.torch.prepare_data_loader(train_loader_train, move_to_device=False)
-        self._val_loader_train = train.torch.prepare_data_loader(val_loader_train, move_to_device=False)
-        self._train_loader_val = train.torch.prepare_data_loader(train_loader_val, move_to_device=False)
-        self._val_loader_val = train.torch.prepare_data_loader(val_loader_val, move_to_device=False)
+        try:
+            self._train_loader_train = train.torch.prepare_data_loader(train_loader_train, move_to_device=False)
+            self._val_loader_train = train.torch.prepare_data_loader(val_loader_train, move_to_device=False)
+            self._train_loader_val = train.torch.prepare_data_loader(train_loader_val, move_to_device=False)
+            self._val_loader_val = train.torch.prepare_data_loader(val_loader_val, move_to_device=False)
+        except:
+            self._train_loader_train = train_loader_train
+            self._val_loader_train = val_loader_train
+            self._train_loader_val = train_loader_val
+            self._val_loader_val = val_loader_val
 
         self.train_models = self.model_creator(config, self.graph_train)
         for model_index, model in enumerate(self.train_models):
-            self.train_models[model_index] = train.torch.prepare_model(model)
+            try:
+                self.train_models[model_index] = train.torch.prepare_model(model)
+            except:
+                self.train_models[model_index] = model.to(self._device)
         self.train_optimizers = self.optimizer_creator(self.train_models, config)
 
         self.val_models = self.model_creator(config, self.graph_val)
         for model_index, model in enumerate(self.val_models):
-            self.val_models[model_index] = train.torch.prepare_model(model)
+            try:
+                self.val_models[model_index] = train.torch.prepare_model(model)
+            except:
+                self.val_models[model_index] = model.to(self._device)
         self.val_optimizers = self.optimizer_creator(self.val_models, config)
 
     @catch_error
@@ -479,12 +497,14 @@ class VenvOperator():
             param: path, where to save the models
             param: with_env, whether to save venv along with the models
         """
+        self.best_graph_train.reset()
         for node_name in self.best_graph_train.keys():
             node = self.best_graph_train.get_node(node_name)
             if node.node_type == 'network':
                 network = deepcopy(node.get_network()).cpu()
                 torch.save(network, os.path.join(path, node_name + '_train.pt'))
 
+        self.best_graph_val.reset()
         for node_name in self.best_graph_val.keys():
             node = self.best_graph_val.get_node(node_name)
             if node.node_type == 'network':
@@ -951,7 +971,7 @@ class VenvOperator():
                 try:
                     save_histogram(histogram_path, self.best_graph_train, self._train_loader_val, device=self._device, scope='train')
                     save_histogram(histogram_path, self.best_graph_val, self._val_loader_val, device=self._device, scope='val')
-                    
+
                     if self.config["rollout_dataset_mode"] == "validate":
                         rollout_dataset = self.val_dataset
                     else:
@@ -981,6 +1001,12 @@ class VenvOperator():
                 os.remove(self._filename_bak)
 
         if self._stop_flag:
+            if self.config["plt_response_curve"]:
+                response_curve_path = os.path.join(self._traj_dir, 'response_curve')
+                if not os.path.exists(response_curve_path):
+                    os.makedirs(response_curve_path)
+                dataset = ray.get(self.config['dataset'])
+                plot_response_curve(response_curve_path, self.best_graph_train, self.best_graph_val, dataset=dataset.data, device=self._device)
             try:
                 customer_uploadTrainLog(self.config["trainId"],
                                         os.path.join(os.path.abspath(self._workspace),"revive.log"),
@@ -989,7 +1015,9 @@ class VenvOperator():
                                         self._acc,
                                         self.config["accessToken"])
             except Exception as e:
-                logger.info(f"{e}")
+                error_message = traceback.format_exc()
+                error_message = ""
+                logger.info('Detect error:{}, Error Message: {}'.format(e,error_message))
 
         return info
 
@@ -1199,10 +1227,8 @@ class VenvAlgorithm:
     
     def get_trainable(self, config):
         try:
-            train_func = self.get_train_func(config)
-            from ray.train import Trainer
-            trainer = Trainer(backend="torch", num_workers=config['workers_per_trial'], use_gpu=config['use_gpu'])
-            trainable = trainer.to_tune_trainable(train_func)
+            trainer = self.get_trainer(config)
+            trainable = trainer.as_trainable()
 
             return trainable 
         except Exception as e:
