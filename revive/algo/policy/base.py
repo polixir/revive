@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2023 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -637,8 +637,7 @@ class PolicyOperator():
 
         generated_data = self.generate_rollout(expert_data, target_policy, env, traj_length, maintain_grad_flow, deterministic, clip)
 
-        generated_data = generate_rewards(generated_data, reward_fn=lambda \
-                data: self._user_func(self._get_original_actions(data)))
+        generated_data = generate_rewards(generated_data, reward_fn=lambda data: self._user_func(self._get_original_actions(data)))
 
         # If use the action for multi-steps in env.
         if self.config["action_steps"] >= 2:
@@ -690,7 +689,8 @@ class PolicyOperator():
             policy.reset()
         
         if isinstance(env, list):
-            for _env in env: _env.reset()
+            for _env in env: 
+                _env.reset()
         else:
             env.reset()
 
@@ -708,7 +708,6 @@ class PolicyOperator():
             env_id = random.sample(range(len(env)), k=sample_env_nums)
             n = int(math.ceil(batch_size / float(sample_env_nums)))
             env_batch_index = [range(batch_size)[i:min(i + n,batch_size)] for i in range(0, batch_size, n)]
-
 
         for i in range(traj_length):
             for policy_index, policy_name in enumerate(self.policy_name):
@@ -743,27 +742,27 @@ class PolicyOperator():
                         current_batch[policy_name + '_log_prob'] = action_log_prob
                         current_batch[policy_name] = deepcopy(action.detach())    
 
-                if isinstance(env, list):
-                    result_batch = []
-                    use_env_id = -1
-                    for _env_id,_env in enumerate(env):
-                        if _env_id not in env_id:
-                            continue
-                        use_env_id += 1
-                        _current_batch = deepcopy(current_batch)[env_batch_index[use_env_id],:]
-                        _current_batch = _env.post_computation(_current_batch, deterministic, clip, policy_index)
-                        result_batch.append(_current_batch)
-                    current_batch = Batch.cat(result_batch)
-                else:
-                    current_batch = env.post_computation(current_batch, deterministic, clip, policy_index)
+            if isinstance(env, list):
+                result_batch = []
+                use_env_id = -1
+                for _env_id,_env in enumerate(env):
+                    if _env_id not in env_id:
+                        continue
+                    use_env_id += 1
+                    _current_batch = deepcopy(current_batch)[env_batch_index[use_env_id],:]
+                    _current_batch = _env.post_computation(_current_batch, deterministic, clip, policy_index)
+                    result_batch.append(_current_batch)
+                current_batch = Batch.cat(result_batch)
+            else:
+                current_batch = env.post_computation(current_batch, deterministic, clip, policy_index)
 
-                generated_data.append(current_batch)
+            generated_data.append(current_batch)
 
-                if i == traj_length - 1 : break
+            if i == traj_length - 1 : break
 
-                current_batch = Batch(self._graph.state_transition(current_batch))
-                for k in self._graph.leaf: 
-                    if not k in self._graph.transition_map.keys(): current_batch[k] = expert_data[i+1][k]
+            current_batch = Batch(self._graph.state_transition(current_batch))
+            for k in self._graph.leaf: 
+                if not k in self._graph.transition_map.keys(): current_batch[k] = expert_data[i+1][k]
 
         generated_data = Batch.stack(generated_data)
 

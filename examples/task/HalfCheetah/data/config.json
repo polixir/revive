@@ -1,6 +1,14 @@
 {
     "base_config": [
         {
+            "name": "train_venv_trials",
+            "abbreviation": "tvt",
+            "description": "Number of total trails searched by the search algorithm in venv training.",
+            "type": "int",
+            "default": 150,
+            "doc": true
+        },
+        {
             "name": "global_seed",
             "abbreviation": "gs",
             "description": "Set the random number seed for the experiment.",
@@ -29,18 +37,11 @@
             "default": false
         },
         {
-            "name": "venv_rollout_horizon",
-            "abbreviation": "vrh",
-            "description": "Length of sampled trajectory, validate only if the algorithm works on sequential data.",
-            "type": "int",
-            "default": 100
-        },
-        {
             "name": "venv_gpus_per_worker",
             "abbreviation": "vgpw",
             "description": "Number of gpus per worker in venv training, small than 1 means launch multiple workers on the same gpu.",
             "type": "float",
-            "default": 1.0
+            "default": 0.2
         },
         {
             "name": "venv_metric",
@@ -55,58 +56,25 @@
             "default": "revive_p"
         },
         {
-            "name": "rollout_plt_frequency",
-            "abbreviation": "rpf",
-            "description": "How many steps between two plot rollout data. 0 means disable.",
-            "type": "int",
-            "default": 50
-        },
-        {
-            "name": "rollout_dataset_mode",
-            "description": "Select the rollout dataset. support `train` and `validate`",
-            "type": "str",
-            "default": "validate"
-        },
-        {
             "name": "policy_gpus_per_worker",
             "abbreviation": "pgpw",
             "description": "Number of gpus per worker in venv training, small than 1 means launch multiple workers on the same gpu.",
             "type": "float",
-            "default": 1.0
+            "default": 0.25
         },
         {
-            "name": "behavioral_policy_init",
-            "abbreviation": "bpi",
-            "description": "Whether to use the learned behavioral policy to as the initialization policy training.",
-            "type": "bool",
-            "default": true
-        },
-        {
-            "name": "policy_algo",
-            "description": "Algorithm used in policy training. There are currently two algorithms to choose from, `ppo` and `sac`.",
-            "type": "str",
-            "default": "ppo"
+            "name": "save_start_epoch",
+            "abbreviation": "sse",
+            "description": "We only save models after this epoch, default is 0 which means we save models from the beginning.",
+            "type": "int",
+            "default": 0
         },
         {
             "name": "test_horizon",
             "abbreviation": "th",
             "description": "Rollout length of the venv test.",
             "type": "int",
-            "default": 100
-        },
-        {
-            "name": "train_venv_trials",
-            "abbreviation": "tvt",
-            "description": "Number of total trails searched by the search algorithm in venv training.",
-            "type": "int",
-            "default": 25
-        },
-        {
-            "name": "train_policy_trials",
-            "abbreviation": "tpt",
-            "description": "Number of total trails searched by the search algorithm in policy training.",
-            "type": "int",
-            "default": 10
+            "default": 50
         }
     ],
     "venv_algo_config": {
@@ -123,19 +91,7 @@
                 "description": "Number of epcoh for the training process",
                 "abbreviation": "mep",
                 "type": "int",
-                "default": 5000
-            },
-            {
-                "name": "fintune",
-                "abbreviation": "bet",
-                "type": "int",
-                "default": 1
-            },
-            {
-                "name": "finetune_fre",
-                "abbreviation": "betfre",
-                "type": "int",
-                "default": 1
+                "default": 1500
             },
             {
                 "name": "policy_hidden_features",
@@ -149,14 +105,14 @@
                 "description": "Depth of policy network.",
                 "abbreviation": "phl",
                 "type": "int",
-                "default": 4
+                "default": 3
             },
             {
                 "name": "policy_backbone",
                 "description": "Backbone of policy network.",
                 "abbreviation": "pb",
                 "type": "str",
-                "default": "res"
+                "default": "mlp"
             },
             {
                 "name": "transition_hidden_features",
@@ -179,6 +135,12 @@
                 "default": "res"
             },
             {
+                "name": "matcher_pretrain_epoch",
+                "abbreviation": "dpe",
+                "type": "int",
+                "default": 0
+            },
+            {
                 "name": "matcher_hidden_features",
                 "description": "Number of neurons per layer of the matcher network.",
                 "abbreviation": "dhf",
@@ -196,137 +158,61 @@
                 "name": "g_steps",
                 "description": "The number of update rounds of the generator in each epoch.",
                 "type": "int",
-                "default": 1,
-                "search_mode": "grid",
-                "search_values": [
-                    1,
-                    3,
-                    5
-                ]
-            },
+                "default": 1
+            },  
             {
                 "name": "d_steps",
                 "description": "Number of update rounds of matcher in each epoch.",
                 "type": "int",
-                "default": 1,
-                "search_mode": "grid",
-                "search_values": [
-                    1,
-                    3,
-                    5
-                ]
+                "default": 1
             },
             {
                 "name": "g_lr",
                 "description": "Initial learning rate of the generator.",
                 "type": "float",
-                "default": 4e-05,
-                "search_mode": "continuous",
-                "search_values": [
-                    1e-06,
-                    0.0001
-                ]
+                "default": 1e-4
             },
             {
                 "name": "d_lr",
                 "description": "Initial learning rate of the matcher.",
                 "type": "float",
-                "default": 0.0006,
-                "search_mode": "continuous",
-                "search_values": [
-                    1e-06,
-                    0.001
-                ]
-            }
-        ],
-        "bc": [
+                "default": 8e-4
+            },
             {
-                "name": "bc_batch_size",
-                "description": "Batch size of training process.",
-                "abbreviation": "bbs",
+                "name": "generator_data_repeat",
+                "description": "Repeat rollout more data to train generator.",
                 "type": "int",
-                "default": 256
-            },
-            {
-                "name": "bc_epoch",
-                "description": "Number of epcoh for the training process",
-                "abbreviation": "bep",
-                "type": "int",
-                "default": 500
-            },
-            {
-                "name": "policy_hidden_features",
-                "description": "Number of neurons per layer of the policy network.",
-                "abbreviation": "phf",
-                "type": "int",
-                "default": 256
-            },
-            {
-                "name": "policy_hidden_layers",
-                "description": "Depth of policy network.",
-                "abbreviation": "phl",
-                "type": "int",
-                "default": 4,
-                "search_mode": "grid",
-                "search_values": [
-                    3,
-                    4,
-                    5
-                ]
-            },
-            {
-                "name": "policy_backbone",
-                "description": "Backbone of policy network.",
-                "abbreviation": "pb",
-                "type": "str",
-                "default": "res",
-                "search_mode": "grid",
-                "search_values": [
-                    "mlp",
-                    "res"
-                ]
-            },
-            {
-                "name": "g_lr",
-                "description": "Initial learning rate of the training process.",
-                "type": "float",
-                "default": 0.0001,
-                "search_mode": "continuous",
-                "search_values": [
-                    1e-06,
-                    0.001
-                ]
-            },
-            {
-                "name": "loss_type",
-                "description": "Bc support different loss function(\"log_prob\", \"mae\", \"mse\").",
-                "type": "str",
-                "default": "log_prob"
+                "default": 2
             }
         ]
     },
     "policy_algo_config": {
-        "ppo": [
+        "sac": [
             {
-                "name": "ppo_batch_size",
+                "name": "sac_batch_size",
                 "description": "Batch size of training process.",
                 "abbreviation": "pbs",
                 "type": "int",
-                "default": 256
+                "default": 1024
             },
             {
-                "name": "ppo_epoch",
-                "description": "Number of epcoh for the training process",
-                "abbreviation": "bep",
+                "name" : "sac_rollout_horizon",
+                "abbreviation" : "srh",
+                "type" : "int",
+                "default" : 10,
+                "search_mode": "grid",
+                "search_values": [
+                    5,
+                    10,
+                    20
+                ]
+            }, 
+            {
+                "name": "sac_steps_per_epoch",
+                "description": "The number of update rounds of sac in each epoch.",
+                "abbreviation": "sspe",
                 "type": "int",
                 "default": 200
-            },
-            {
-                "name": "ppo_rollout_horizon",
-                "description": "Rollout length of the policy train.",
-                "abbreviation": "prh",
-                "type": "int",
-                "default": 100
             },
             {
                 "name": "policy_hidden_features",
@@ -350,12 +236,24 @@
                 "default": "mlp"
             },
             {
+                "name": "buffer_size",
+                "description": "Size of the buffer to store data.",
+                "abbreviation": "bfs",
+                "type": "int",
+                "default": 1000000.0
+            },
+            {
                 "name": "g_lr",
                 "description": "Initial learning rate of the training process.",
                 "type": "float",
-                "default": 4e-05,
-                "search_mode": "continuous",
-                "search_values": [1e-06,0.001]
+                "default": 1e-03,
+                "search_mode": "grid",
+                "search_values": [
+                    2e-4,
+                    5e-4,
+                    8e-4,
+                    1e-3
+                ]
             }
         ]
     }

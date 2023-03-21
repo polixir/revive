@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2023 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -174,10 +174,12 @@ class NetworkDecisionNode(DesicionNode):
                                                 use_feature_embed=self.use_feature_embed)
             elif backbone_type in ['gru', 'lstm']:
                 assert isinstance(input_dim, int), "assert isinstance(input_dim, int)"
-                network = RecurrentTransition(input_dim, output_dim,
+                network = RecurrentRESTransition(input_dim, output_dim,
                                               hidden_features, hidden_layers,
                                               dist_config, backbone_type=backbone_type,
-                                              mode=transition_mode, obs_dim=obs_dim)
+                                              mode=transition_mode, obs_dim=obs_dim,
+                                              rnn_hidden_features=kwargs['rnn_hidden_features'],
+                                              joint_train=False)
             else:
                 raise ValueError(f'Initializing node `{self.name}`, backbone type {backbone_type} is not supported!')
         else:
@@ -191,9 +193,11 @@ class NetworkDecisionNode(DesicionNode):
                                             use_feature_embed=self.use_feature_embed)         
             elif backbone_type in ['gru', 'lstm']:
                 assert isinstance(input_dim, int), "assert isinstance(input_dim, int)"
-                network = RecurrentPolicy(input_dim, output_dim,
-                                          hidden_features, hidden_layers,
-                                          dist_config, backbone_type)
+                network = RecurrentRESPolicy(input_dim, output_dim,
+                                                hidden_features, hidden_layers,
+                                                dist_config, backbone_type=backbone_type,
+                                                rnn_hidden_features=kwargs['rnn_hidden_features'],
+                                                joint_train=False)
             elif backbone_type in ['contextual_gru', 'contextual_lstm']:
                 assert isinstance(input_dim, int), "assert isinstance(input_dim, int)"
                 network = ContextualPolicy(input_dim, output_dim,
@@ -322,9 +326,9 @@ class DesicionGraph:
                  graph_dict : Dict[str, List[str]], 
                  descriptions : Dict[str, List[Dict[str, Dict[str, Any]]]],
                  fit,
-                 metric_nodes,
-                 use_step_node) -> None:
+                 metric_nodes) -> None:
         self.descriptions = descriptions
+        self.graph_list = []
         self.graph_dict = self.sort_graph(graph_dict)
         self.fit = fit
         self.leaf = self.get_leaf(self.graph_dict)
@@ -334,10 +338,6 @@ class DesicionGraph:
         self.nodes = OrderedDict()
         for node_name in self.graph_dict.keys():
             self.nodes[node_name] = None
-
-        if use_step_node:
-            self.graph_dict['step_node_'] = ['step_node_']
-            self.nodes['step_node_'] = None
 
         if metric_nodes is None:
             self.metric_nodes = list(self.nodes.keys())
@@ -482,11 +482,10 @@ class DesicionGraph:
 
     def is_equal_venv(self, source_graph : 'DesicionGraph', policy_node) -> bool:
         ''' check if new graph shares the same virtual environments  '''
-        
         for node_name in self.nodes.keys():
             target_node = self.get_node(node_name)
             
-            if node_name == policy_node:            # do not judge policy node
+            if node_name in policy_node:            # do not judge policy node
                 continue
 
             source_node = source_graph.get_node(node_name)
@@ -567,13 +566,15 @@ class DesicionGraph:
         inputs = []
         for names in graph.values(): inputs += names
         inputs = set(inputs)
-        transition = {name[5:] : name for name in outputs if name.startswith('next_') and name[5:] in inputs}
+        # transition = {name[5:] : name for name in outputs if name.startswith('next_') and name[5:] in inputs}
+        transition = {name[5:] : name for name in outputs if name.startswith('next_') and (name[5:] in inputs or "ts_"+name[5:] in inputs)}
         return transition
 
     def sort_graph(self, graph_dict : dict) -> OrderedDict:
         '''Sort arbitrary computation graph to the topological order'''
         ordered_graph = OrderedDict()
         computed = self.get_leaf(graph_dict)
+        self.graph_list = deepcopy(computed)
         
         # sort output
         while len(graph_dict) > 0:
@@ -583,6 +584,7 @@ class DesicionGraph:
                 if all([name in computed for name in input_names]):
                     ordered_graph[output_name] = graph_dict.pop(output_name)
                     computed.append(output_name)
+                    self.graph_list.append(output_name)
                     find_new_node = True
                     break
             

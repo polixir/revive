@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2023 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -120,7 +120,6 @@ DEFAULT_CONFIG = [
         'description' : 'Mode of transition, choose from `global` and `local`.',
         'type' : str,
         'default' : 'global',
-        'doc': True,
     }, 
     {
         'name' : 'venv_gpus_per_worker',
@@ -201,15 +200,30 @@ DEFAULT_CONFIG = [
         'description' : 'How many steps between two plot rollout data. 0 means disable.',
         'type' : int,
         'default' : 50,
+        'doc': True,
     },   
+    {
+        'name' : 'venv_save_frequency',
+        'abbreviation' : 'vsp',
+        'description' : 'How many epochs to save a model periodically. 0 means disable.',
+        'type' : int,
+        'default' : 0,
+        'doc': True,
+    },  
     {
         'name' : 'plt_response_curve',
         'abbreviation' : 'prc',
         'description' : 'Whether to plot response curve at the end of venv training.',
         'type' : bool,
         'default' : False,
+    }, 
+    {
+        "name" : "rollout_dataset_mode",
+        "description": "Select the rollout dataset. support `train` and `validate`",
+        "type" : str,
+        "default" : "validate",
+        'doc': True,
     },   
-
     # policy related config
     {
         "name": "policy_gpus_per_worker",
@@ -225,7 +239,6 @@ DEFAULT_CONFIG = [
         "description": "Max number of venvs used in policy training, clipped when there is no enough venvs available.",
         "type": float,
         "default": 1,
-        'doc': True,
     },
     {
         "name": "behavioral_policy_init",
@@ -240,6 +253,7 @@ DEFAULT_CONFIG = [
         "description": 'Algorithm used in policy training. There are currently two algorithms to choose from, `ppo` and `sac`.',
         "type": str,
         "default": "ppo",
+        'doc': True,
     },
     {
         "name": "test_gamma",
@@ -288,13 +302,6 @@ DEFAULT_CONFIG = [
         "description": "Use the action for some steps in env.",
         "type" : int,
         "default" : 1,
-        'doc': True,
-    }, 
-    {
-        "name" : "rollout_dataset_mode",
-        "description": "Select the rollout dataset. support `train` and `validate`",
-        "type" : str,
-        "default" : "train",
     }, 
 
     # parameter tuning related config

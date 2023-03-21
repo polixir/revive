@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2023 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -492,47 +492,54 @@ class VenvOperator():
         if metric == ray.get(self._data_buffer.get_least_metric.remote()):
             self._save_models(self._workspace, with_env=False)
 
-    def _save_models(self, path : str, with_env : bool = True):
+    def _save_models(self, path: str, with_env:bool=True, model_prefixes:str=""):
         """ 
             param: path, where to save the models
             param: with_env, whether to save venv along with the models
         """
-        self.best_graph_train.reset()
-        for node_name in self.best_graph_train.keys():
-            node = self.best_graph_train.get_node(node_name)
+        if model_prefixes:
+            model_prefixes = model_prefixes + "_"
+        best_graph_train = deepcopy(self.graph_train)
+        best_graph_val   = deepcopy(self.graph_val)
+
+        best_graph_train.reset()
+        for node_name in best_graph_train.keys():
+            node = best_graph_train.get_node(node_name)
             if node.node_type == 'network':
                 network = deepcopy(node.get_network()).cpu()
                 torch.save(network, os.path.join(path, node_name + '_train.pt'))
 
         self.best_graph_val.reset()
-        for node_name in self.best_graph_val.keys():
-            node = self.best_graph_val.get_node(node_name)
+        for node_name in best_graph_val.keys():
+            node = best_graph_val.get_node(node_name)
             if node.node_type == 'network':
                 network = deepcopy(node.get_network()).cpu()
                 torch.save(network, os.path.join(path, node_name + '_val.pt'))
 
         if with_env:
-            best_graph_train = deepcopy(self.best_graph_train).to("cpu")
+            best_graph_train = deepcopy(best_graph_train).to("cpu")
             venv_train = VirtualEnvDev(best_graph_train)
             torch.save(venv_train, os.path.join(path, "venv_train.pt"))
 
-            best_graph_val = deepcopy(self.best_graph_val).to("cpu")
+            best_graph_val = deepcopy(best_graph_val).to("cpu")
             venv_val = VirtualEnvDev(best_graph_val)
             torch.save(venv_val, os.path.join(path, "venv_val.pt"))
 
             venv = VirtualEnv([venv_train, venv_val])
-            with open(os.path.join(path, 'venv.pkl'), 'wb') as f:
+            with open(os.path.join(path, model_prefixes + 'venv.pkl'), 'wb') as f:
                 pickle.dump(venv, f)
 
     def _load_best_models(self):
-        for node_name in self.best_graph_train.keys():
-            best_node = self.best_graph_train.get_node(node_name)
+        best_graph_train = deepcopy(self.graph_train)
+        best_graph_val   = deepcopy(self.graph_val)
+        for node_name in best_graph_train.keys():
+            best_node = best_graph_train.get_node(node_name)
             current_node = self.graph_train.get_node(node_name)
             if best_node.node_type == 'network':
                 current_node.get_network().load_state_dict(best_node.get_network().state_dict())
 
-        for node_name in self.best_graph_val.keys():
-            best_node = self.best_graph_val.get_node(node_name)
+        for node_name in best_graph_val.keys():
+            best_node = best_graph_val.get_node(node_name)
             current_node = self.graph_val.get_node(node_name)
             if best_node.node_type == 'network':
                 current_node.get_network().load_state_dict(best_node.get_network().state_dict())
@@ -947,6 +954,11 @@ class VenvOperator():
 
             info["least_metric"] = self.least_train_metric
             self.least_metric = self.least_train_metric
+            
+            if self.config["venv_save_frequency"]:
+                if self._epoch_cnt % self.config["venv_save_frequency"] == 0:
+                    self._save_models(self._traj_dir, model_prefixes = str(self._epoch_cnt)) 
+                
             
             # Save the k env for every task
             if self._epoch_cnt % 1 == 0:

@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2023 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -323,12 +323,14 @@ class FeedForwardPolicy(torch.nn.Module):
         super().__init__()
         self.multihead = []
         self.dist_config = dist_config
+        self.use_feature_embed = use_feature_embed
         self.feature_embed_layers = OrderedDict()
 
-        if use_feature_embed:
+        if self.use_feature_embed:
             embed_dim = 64
             for input_name in sorted(in_features.keys()):
                 self.feature_embed_layers[input_name] = MLP(in_features[input_name], embed_dim, 64, 1, norm=None, hidden_activation='leakyrelu')
+            self.feature_embed_layers = nn.ModuleDict(self.feature_embed_layers)
             in_features = embed_dim * len(in_features.keys())
 
         if not use_multihead:
@@ -368,9 +370,9 @@ class FeedForwardPolicy(torch.nn.Module):
         self.dist_wrapper = DistributionWrapper('mix', dist_config=dist_config)
         
 
-    def forward(self, state : Union[torch.Tensor, Dict[str, torch.Tensor]], adapt_std : Optional[torch.Tensor] = None) -> ReviveDistribution:
-        if self.feature_embed_layers:
-            assert isinstance(state, dict), f"state must be dict, not {type(state)}, if you use node embedding"
+    def forward(self, state : Union[torch.Tensor, Dict[str, torch.Tensor]], adapt_std : Optional[torch.Tensor] = None, **kwargs) -> ReviveDistribution:
+        if self.use_feature_embed:
+            assert isinstance(state, dict), f"input must be dict, not {type(state)}, if you use node embedding"
             total_embeddings = []
             for key in self.feature_embed_layers:
                 total_embeddings.append(self.feature_embed_layers[key](state[key]))
@@ -425,11 +427,6 @@ class FeedForwardPolicy(torch.nn.Module):
         dist = self(state)
         return dist.mode if deterministic else dist.sample()
 
-    def to(self, device):
-        super(FeedForwardPolicy, self).to(device)
-        for key in self.feature_embed_layers:
-            self.feature_embed_layers[key].to(device)
-        return self
 
 class RecurrentPolicy(torch.nn.Module):
     def __init__(self, 
@@ -450,7 +447,7 @@ class RecurrentPolicy(torch.nn.Module):
     def reset(self):
         self.h = None
 
-    def forward(self, x : torch.Tensor, adapt_std : Optional[torch.Tensor] = None) -> ReviveDistribution:
+    def forward(self, x : torch.Tensor, adapt_std : Optional[torch.Tensor] = None, **kwargs) -> ReviveDistribution:
         if len(x.shape) == 2:
             x = x.unsqueeze(0)
             rnn_output, self.h = self.rnn(x, self.h)
@@ -459,6 +456,180 @@ class RecurrentPolicy(torch.nn.Module):
             rnn_output, self.h = self.rnn(x)
         logits = self.mlp(rnn_output)
         return self.dist_wrapper(logits, adapt_std)
+
+
+class RecurrentMLPPolicy(torch.nn.Module):
+    def __init__(self, 
+                 in_features : int, 
+                 out_features : int, 
+                 hidden_features : int, 
+                 hidden_layers : int, 
+                 dist_config : list, 
+                 backbone_type : Union[str, np.str_] ='gru',
+                 rnn_hidden_features : int = 64,
+                 joint_train : bool = False):
+        super().__init__()
+
+        self.joint_train = joint_train
+
+        RNN = torch.nn.GRU if backbone_type == 'gru' else torch.nn.LSTM
+
+        self.in_feature_embed = nn.Linear(in_features, hidden_features)
+        self.rnn = RNN(in_features, rnn_hidden_features, hidden_layers)
+        self.backbone = MLP(hidden_features + rnn_hidden_features, out_features, 0, 0)
+
+        self.dist_wrapper = DistributionWrapper('mix', dist_config=dist_config)
+
+
+    def reset(self):
+        self.h = None
+
+    def forward(self, x : torch.Tensor, adapt_std : Optional[torch.Tensor] = None, field: str = 'mail', **kwargs) -> ReviveDistribution:
+        if field == 'bc':
+            shape = x.shape
+            if len(shape) == 2:
+                x_embed = self.in_feature_embed(x)
+                a = x.unsqueeze(0)
+                rnn_output, self.h = self.rnn(a, self.h)
+                rnn_output = rnn_output.squeeze(0)  # (bs, dim)
+                logits = self.backbone(torch.concat([x_embed, rnn_output], dim=-1))  # (bs, dim)
+            else:
+                assert len(shape) == 3, f"expect len(x.shape) == 3. However got x.shape {shape}"
+                self.h = None
+                output = []
+                for i in range(shape[0]):
+                    a = x[i]
+                    a = a.unsqueeze(0) #(1, bs, dim)
+                    a_embed = self.in_feature_embed(a)  # (1, bs, dim)
+                    rnn_output, self.h = self.rnn(a, self.h)  #(1, bs, dim)
+                    backbone_output = self.backbone(torch.concat([a_embed, rnn_output], dim=-1))  # (1, bs, dim)
+                    output.append(backbone_output)
+                logits = torch.concat(output, dim=0)
+        elif field == 'mail':
+            shape = x.shape
+            if len(shape) == 2:
+                x_embed = self.in_feature_embed(x)
+                a = x.unsqueeze(0)
+                if self.joint_train:
+                    rnn_output, self.h = self.rnn(a, self.h)
+                else:
+                    with torch.no_grad():
+                        rnn_output, self.h = self.rnn(a, self.h)
+                rnn_output = rnn_output.squeeze(0)  # (bs, dim)
+                logits = self.backbone(torch.concat([x_embed, rnn_output], dim=-1))  # (bs, dim)
+            else:
+                assert len(shape) == 3, f"expect len(x.shape) == 3. However got x.shape {shape}"
+                self.h = None
+                output = []
+                for i in range(shape[0]):
+                    a = x[i]
+                    a = a.unsqueeze(0) #(1, bs, dim)
+                    a_embed = self.in_feature_embed(a)  # (1, bs, dim)
+                    if self.joint_train:
+                        rnn_output, self.h = self.rnn(a, self.h)  #(1, bs, dim)
+                    else:
+                        with torch.no_grad():
+                            rnn_output, self.h = self.rnn(a, self.h)  #(1, bs, dim)
+                    backbone_output = self.backbone(torch.concat([a_embed, rnn_output], dim=-1))  # (1, bs, dim)
+                    output.append(backbone_output)
+                logits = torch.concat(output, dim=0)
+        return self.dist_wrapper(logits, adapt_std)
+
+
+class RecurrentRESPolicy(torch.nn.Module):
+    def __init__(self, 
+                 in_features : int, 
+                 out_features : int, 
+                 hidden_features : int, 
+                 hidden_layers : int, 
+                 dist_config : list, 
+                 backbone_type : Union[str, np.str_] ='gru',
+                 rnn_hidden_features : int = 256,
+                 joint_train : bool = False):
+        super().__init__()
+
+        self.joint_train = joint_train
+
+        RNN = torch.nn.GRU if backbone_type == 'gru' else torch.nn.LSTM
+
+        self.in_feature_embed = nn.Sequential(
+            nn.Linear(in_features, hidden_features),
+            ACTIVATION_CREATORS['relu'](hidden_features),
+            nn.Dropout(0.1),
+            nn.LayerNorm(hidden_features)
+        )
+
+        self.side_net = nn.Sequential(
+            ResBlock(hidden_features, hidden_features),
+            nn.Dropout(0.1),
+            nn.LayerNorm(hidden_features),
+            ResBlock(hidden_features, hidden_features),
+            nn.Dropout(0.1),
+            nn.LayerNorm(hidden_features)
+        )
+
+        self.rnn = RNN(hidden_features, rnn_hidden_features, hidden_layers)
+        self.backbone = MLP(hidden_features + rnn_hidden_features, out_features, hidden_features, 1)
+        self.dist_wrapper = DistributionWrapper('mix', dist_config=dist_config)
+
+    def reset(self):
+        self.h = None
+
+    def forward(self, x : torch.Tensor, adapt_std : Optional[torch.Tensor] = None, field: str = 'mail', **kwargs) -> ReviveDistribution:
+        if field == 'bc':
+            shape = x.shape
+            if len(shape) == 2:
+                x_embed = self.in_feature_embed(x)
+                side_output = self.side_net(x_embed)
+                a = x_embed.unsqueeze(0)
+                rnn_output, self.h = self.rnn(a, self.h)
+                rnn_output = rnn_output.squeeze(0)  # (bs, dim)
+                logits = self.backbone(torch.concat([side_output, rnn_output], dim=-1))  # (bs, dim)
+            else:
+                assert len(shape) == 3, f"expect len(x.shape) == 3. However got x.shape {shape}"
+                self.h = None
+                output = []
+                for i in range(shape[0]):
+                    a = x[i]
+                    a = a.unsqueeze(0) #(1, bs, dim)
+                    a_embed = self.in_feature_embed(a)  # (1, bs, dim)
+                    side_output = self.side_net(a_embed)
+                    rnn_output, self.h = self.rnn(a_embed, self.h)  #(1, bs, dim)
+                    backbone_output = self.backbone(torch.concat([side_output, rnn_output], dim=-1))  # (1, bs, dim)
+                    output.append(backbone_output)
+                logits = torch.concat(output, dim=0)
+        elif field == 'mail':
+            shape = x.shape
+            if len(shape) == 2:
+                x_embed = self.in_feature_embed(x)
+                side_output = self.side_net(x_embed)
+                a = x_embed.unsqueeze(0)
+                if self.joint_train:
+                    rnn_output, self.h = self.rnn(a, self.h)
+                else:
+                    with torch.no_grad():
+                        rnn_output, self.h = self.rnn(a, self.h)
+                rnn_output = rnn_output.squeeze(0)  # (bs, dim)
+                logits = self.backbone(torch.concat([side_output, rnn_output], dim=-1))  # (bs, dim)
+            else:
+                assert len(shape) == 3, f"expect len(x.shape) == 3. However got x.shape {shape}"
+                self.h = None
+                output = []
+                for i in range(shape[0]):
+                    a = x[i]
+                    a = a.unsqueeze(0) #(1, bs, dim)
+                    a_embed = self.in_feature_embed(a)  # (1, bs, dim)
+                    side_output = self.side_net(a_embed)
+                    if self.joint_train:
+                        rnn_output, self.h = self.rnn(a_embed, self.h)  #(1, bs, dim)
+                    else:
+                        with torch.no_grad():
+                            rnn_output, self.h = self.rnn(a_embed, self.h)  #(1, bs, dim)
+                    backbone_output = self.backbone(torch.concat([side_output, rnn_output], dim=-1))  # (1, bs, dim)
+                    output.append(backbone_output)
+                logits = torch.concat(output, dim=0)
+        return self.dist_wrapper(logits, adapt_std)
+
 
 class ContextualPolicy(torch.nn.Module):
     def __init__(self, 
@@ -479,7 +650,7 @@ class ContextualPolicy(torch.nn.Module):
     def reset(self):
         self.h = None
 
-    def forward(self, x : torch.Tensor, adapt_std : Optional[torch.Tensor] = None) -> ReviveDistribution:
+    def forward(self, x : torch.Tensor, adapt_std : Optional[torch.Tensor] = None, **kwargs) -> ReviveDistribution:
         in_feature = x
         if len(x.shape) == 2:
             x = x.unsqueeze(0)
@@ -526,11 +697,12 @@ class FeedForwardTransition(FeedForwardPolicy):
     def reset(self):
         pass
 
-    def forward(self, state : Union[torch.Tensor, Dict[str, torch.Tensor]], adapt_std : Optional[torch.Tensor] = None) -> ReviveDistribution:
+    def forward(self, state : Union[torch.Tensor, Dict[str, torch.Tensor]], adapt_std : Optional[torch.Tensor] = None, **kwargs) -> ReviveDistribution:
         dist = super(FeedForwardTransition, self).forward(state, adapt_std)
         if self.mode == 'local' and self.obs_dim is not None:
             dist = dist.shift(state[..., :self.obs_dim])
         return dist
+
 
 class RecurrentTransition(RecurrentPolicy):
     def __init__(self, 
@@ -556,6 +728,68 @@ class RecurrentTransition(RecurrentPolicy):
 
     def forward(self, state : torch.Tensor, adapt_std : Optional[torch.Tensor] = None) -> ReviveDistribution:
         dist = super(RecurrentTransition, self).forward(state, adapt_std)
+        if self.mode == 'local' and self.obs_dim is not None:
+            dist = dist.shift(state[..., :self.obs_dim])
+        return dist
+
+
+class RecurrentMLPTransition(RecurrentMLPPolicy):
+    def __init__(self, 
+                 in_features : int, 
+                 out_features : int, 
+                 hidden_features : int, 
+                 hidden_layers : int, 
+                 dist_config : list,
+                 backbone_type : Union[str, np.str_] = 'mlp',
+                 mode : str = 'global',
+                 obs_dim : Optional[int] = None,
+                 rnn_hidden_features : int = 64,
+                 joint_train : bool = False):
+        
+        self.mode = mode
+        self.obs_dim = obs_dim
+
+        if self.mode == 'local': assert not 'onehot' in [config['type'] for config in dist_config], \
+            "The local mode of transition is not compatible with onehot data! Please fallback to global mode!"
+        if self.mode == 'local': assert self.obs_dim is not None, \
+            "For local mode, the dim of observation should be given!"
+
+        super(RecurrentMLPTransition, self).__init__(in_features, out_features, hidden_features, hidden_layers, 
+                                                  dist_config, backbone_type, joint_train=joint_train, rnn_hidden_features=rnn_hidden_features)
+
+    def forward(self, state : torch.Tensor, adapt_std : Optional[torch.Tensor] = None, field: str = 'mail', **kwargs) -> ReviveDistribution:
+        dist = super(RecurrentMLPTransition, self).forward(state, adapt_std, field)
+        if self.mode == 'local' and self.obs_dim is not None:
+            dist = dist.shift(state[..., :self.obs_dim])
+        return dist
+
+
+class RecurrentRESTransition(RecurrentRESPolicy):
+    def __init__(self, 
+                 in_features : int, 
+                 out_features : int, 
+                 hidden_features : int, 
+                 hidden_layers : int, 
+                 dist_config : list,
+                 backbone_type : Union[str, np.str_] = 'mlp',
+                 mode : str = 'global',
+                 obs_dim : Optional[int] = None,
+                 rnn_hidden_features : int = 64,
+                 joint_train : bool = False):
+        
+        self.mode = mode
+        self.obs_dim = obs_dim
+
+        if self.mode == 'local': assert not 'onehot' in [config['type'] for config in dist_config], \
+            "The local mode of transition is not compatible with onehot data! Please fallback to global mode!"
+        if self.mode == 'local': assert self.obs_dim is not None, \
+            "For local mode, the dim of observation should be given!"
+
+        super(RecurrentRESTransition, self).__init__(in_features, out_features, hidden_features, hidden_layers, 
+                                                  dist_config, backbone_type, joint_train=joint_train, rnn_hidden_features=rnn_hidden_features)
+
+    def forward(self, state : torch.Tensor, adapt_std : Optional[torch.Tensor] = None, field: str = 'mail', **kwargs) -> ReviveDistribution:
+        dist = super(RecurrentRESTransition, self).forward(state, adapt_std, field)
         if self.mode == 'local' and self.obs_dim is not None:
             dist = dist.shift(state[..., :self.obs_dim])
         return dist

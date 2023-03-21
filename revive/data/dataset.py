@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2023 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -39,6 +39,7 @@ from revive.data.processor import DataProcessor
 from revive.utils.common_utils import find_later, load_data, plot_traj, import_model_from_file
 
 DATADIR = os.path.abspath(os.path.join(os.path.dirname(revive.__file__), '../data/'))
+
 
 class OfflineDataset(torch.utils.data.Dataset):
     r"""An offline dataset class.
@@ -123,7 +124,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         nodes_config = raw_config['metadata'].get('nodes', None)
         self.ts_nodes = {}
         self.ts_node_frames = {}
-        self.use_step_node = False
+        use_step_node = False
         self.expert_functions = raw_config['metadata'].get('expert_functions',{})
 
         if nodes_config:
@@ -133,11 +134,15 @@ class OfflineDataset(torch.utils.data.Dataset):
                 assert "step_node_" not in raw_data.keys()
                 trj_index = [0,] + list(raw_data["index"])
                 step_node_data_list = []
+                max_traj_len = 0
                 for trj_start_index, trj_end_index in zip(trj_index[:-1], trj_index[1:]):
+                    max_traj_len = max(max_traj_len, trj_end_index-trj_start_index)
                     step_node_data_list.append(np.arange(0, trj_end_index-trj_start_index).reshape(-1,1))
                 step_node_data = np.concatenate(step_node_data_list,axis=0)
+
                 raw_data["step_node_"] = step_node_data
-                raw_config['metadata']['columns'] += [{'step_node_': {'dim': 'step_node_', 'type': 'continuous'}},]
+                raw_config['metadata']['columns'] += [{'step_node_': {'dim': 'step_node_', 'type': 'continuous', 'min': 0, 'max': max_traj_len*2}},]
+                raw_config['metadata']['graph']['next_step_node_'] = ['step_node_']
 
                 for node, step_node_flag in step_node_config.items():
                     if node not in graph_dict.keys():
@@ -145,13 +150,13 @@ class OfflineDataset(torch.utils.data.Dataset):
                     if step_node_flag:
                         logger.info(f"Append step_node data as the {node} node's input.")
                         graph_dict[node] = graph_dict[node] + ["step_node_",]
-                        self.use_step_node = True
+                        use_step_node = True
                 # append step_node_function
-                if self.use_step_node:
+                if use_step_node:
                     # self.expert_functions = raw_config['metadata'].get('expert_functions',{})
                     shutil.copyfile(os.path.join(os.path.dirname(revive.__file__),"./common/step_node_function.py"),  os.path.join(os.path.dirname(self.config_file), "./step_node_function.py"))
-                    self.expert_functions["step_node_"] = {"node_function": "step_node_function.get_next_step_node"}
-                    
+                    self.expert_functions['next_step_node_'] = {"node_function": "step_node_function.get_next_step_node"}
+
                 self._raw_config = raw_config
                 self._raw_data = raw_data
                     
@@ -229,7 +234,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         for nodata_node_name in self.graph.nodata_node_names:
             assert nodata_node_name not in self.data.keys()
             node_data_dims = len(self.raw_columns[nodata_node_name])
-            self.data[nodata_node_name] = np.ones((list(self.data.values())[0].shape[0], node_data_dims))
+            self.data[nodata_node_name] = np.ones((list(self.data.values())[0].shape[0], node_data_dims), dtype=np.float32)
 
         '''1. check if the dimension of data matches the dimension described in yaml'''
         for k, v in self.raw_columns.items():
@@ -346,6 +351,54 @@ class OfflineDataset(torch.utils.data.Dataset):
             assert nodata_node_name in self.data.keys()
             self.data.pop(nodata_node_name)
 
+    def compute_missing_data(self, need_truncate):
+        processed_nodes = []
+        new_data = {k : [] for k in self.data.keys()}
+        for node_name in self.graph.transition_map.values(): 
+            new_data[node_name] = []
+
+        if need_truncate:
+            for start, end in zip(self._start_indexes, self._end_indexes):
+                for k in self.data.keys():
+                    new_data[k].append(self.data[k][start:end-1])
+            for k in self.data.keys(): 
+                new_data[k] = np.concatenate(new_data[k], axis=0)
+
+        for node_name in self.graph.graph_list:
+            if node_name not in self.data.keys():
+                node = self.graph.get_node(node_name)
+                if node.node_type == 'function':
+                    # expert processing
+                    warnings.warn(f'Detect node {node_name} is not avaliable in the provided data, trying to compute it ...')
+                    assert node.node_type == 'function', \
+                        f'You need to provide the function to compute node {node_name} since it is not given in the data!'
+                    inputs = {name : new_data[name] for name in node.input_names}
+                    convert_func = torch.tensor if node.node_function_type == 'torch' else np.array
+                    inputs = {k : convert_func(v) for k, v in inputs.items()}
+                    output = node.node_function(inputs)
+                    new_data[node_name] = np.array(output).astype(np.float32)
+                elif node_name.startswith("next_"):
+                    # next_ processing
+                    ori_name = node_name[5:]
+                    warnings.warn(f'transition variable {node_name} is not provided and cannot be computed!')
+                    processed_nodes.append(ori_name)
+                    for start, end in zip(self._start_indexes, self._end_indexes):
+                        new_data[node_name].append(self.data[ori_name][start+1:end])
+                    new_data[node_name] = np.concatenate(new_data[node_name], axis=0)
+                elif node.node_type == 'network':
+                    # this is for handling empty node 
+                    continue
+                else:
+                    logger.error(f"Node {node_name} is not neither next_ node nor expert node. And {node_name} is missing in data. Please check the dataset file !")
+                    raise NotImplementedError
+
+        self._start_indexes -= np.arange(self._start_indexes.shape[0])
+        self._end_indexes -= np.arange(self._end_indexes.shape[0]) + 1
+        self._traj_lengths -= 1
+        self._min_length -= 1
+        self._max_length -= 1
+        self.data = Batch(new_data)
+
     def _load_data(self, data_file : str):
         '''
             load data from the data file and conduct following processes:
@@ -379,11 +432,11 @@ class OfflineDataset(torch.utils.data.Dataset):
         
         # check if the index is correct
         assert np.all((self._end_indexes[1:] - self._end_indexes[:-1]) > 0), f'index must be incremental order, but got {self._end_indexes}.'
-        for node_name in raw_data.keys():
-            if node_name not in self.graph.tunable:
-                datasize = raw_data[node_name].shape[0]
+        for output_node_name in raw_data.keys():
+            if output_node_name not in self.graph.tunable:
+                datasize = raw_data[output_node_name].shape[0]
                 assert datasize == self._end_indexes[-1], \
-                    f'detect index exceed the provided data, the max index is {self._end_indexes[-1]}, but got {node_name} in shape {raw_data[node_name].shape}.' 
+                    f'detect index exceed the provided data, the max index is {self._end_indexes[-1]}, but got {output_node_name} in shape {raw_data[output_node_name].shape}.' 
         
         self._start_indexes = np.concatenate([np.array([0]), self._end_indexes[:-1]])
         self._traj_lengths = self._end_indexes - self._start_indexes
@@ -398,26 +451,10 @@ class OfflineDataset(torch.utils.data.Dataset):
 
         self.data = Batch(raw_data)
 
-        # compute node if they are defined on the graph but not present in the data
-        for node_name in self.graph.keys():
-            if node_name not in self.data.keys():
-                warnings.warn(f'Detect node {node_name} is not avaliable in the provided data, trying to compute it ...')
-                node = self.graph.get_node(node_name)
-                if node.node_type != 'function':
-                    continue
-                if node_name in self.graph.transition_map.values() and not node.node_type == 'function': continue
-                assert node.node_type == 'function', \
-                    f'You need to provide the function to compute node {node_name} since it is not given in the data!'
-                inputs = {name : self.data[name] for name in node.input_names}
-                convert_func = torch.tensor if node.node_function_type == 'torch' else np.array
-                inputs = {k : convert_func(v) for k, v in inputs.items()}
-                output = node.node_function(inputs)
-                self.data[node_name] = np.array(output).astype(np.float32) 
-
         # check if all the transition variables are in the data
         need_truncate = False
         for node_name in self.graph.transition_map.values():
-            if not node_name in self.data.keys():
+            if node_name not in self.data.keys():
                 warnings.warn(f'transition variable {node_name} is not provided and cannot be computed!')
                 need_truncate = True
         if need_truncate:
@@ -426,21 +463,17 @@ class OfflineDataset(torch.utils.data.Dataset):
                     self.data.pop(node_name) 
             warnings.warn('truncating the trajectory by 1 step to generate transition variables!')
             assert self._min_length > 1, 'cannot truncate trajectory with length 1'
-            new_data = {k : [] for k in self.data.keys()}
-            for node_name in self.graph.transition_map.values(): 
-                new_data[node_name] = []
-            for start, end in zip(self._start_indexes, self._end_indexes):
-                for k in self.data.keys():
-                    new_data[k].append(self.data[k][start:end-1])
-                for curr_name, next_name in self.graph.transition_map.items():
-                    new_data[next_name].append(self.data[curr_name][start+1:end])
-            for k in new_data.keys(): new_data[k] = np.concatenate(new_data[k], axis=0)
-            self._start_indexes -= np.arange(self._start_indexes.shape[0])
-            self._end_indexes -= np.arange(self._end_indexes.shape[0]) + 1
-            self._traj_lengths -= 1
-            self._min_length -= 1
-            self._max_length -= 1
-            self.data = Batch(new_data)   
+
+        # compute node if they are defined on the graph but not present in the data
+        need_compute = False
+        for node_name in self.graph.keys():
+            if node_name not in self.data.keys():
+                warnings.warn(f'Detect node {node_name} is not avaliable in the provided data, trying to compute it ...')
+                need_compute = True
+        
+        # here to process the data
+        if need_truncate or need_compute:
+            self.compute_missing_data(need_truncate)
 
         # append mask index for nan value
         self.nan_isin_data = False
@@ -459,11 +492,11 @@ class OfflineDataset(torch.utils.data.Dataset):
         # parse no data nodes: No data node support for training using the revive algo
         nodata_node_names = []
         for node in self.graph.nodes.values():
-            node_name = node.name
-            if node_name not in list(self.data.keys()):
-                logger.warning(f'Find no data node. Node type: "{node.node_type}". Node name: "{node_name}".')
+            output_node_name = node.name
+            if output_node_name not in list(self.data.keys()):
+                logger.warning(f'Find no data node. Node type: "{node.node_type}". Node name: "{output_node_name}".')
                 if node.node_type == "network":
-                    nodata_node_names.append(node_name)
+                    nodata_node_names.append(output_node_name)
                 elif node.node_type == "function":
                     # TODO: support automatic calculation of data for function nodes.
                     pass
@@ -572,10 +605,18 @@ class OfflineDataset(torch.utils.data.Dataset):
         # parse metric_nodes
         metric_nodes = raw_config['metadata'].get('metric_nodes', None)
 
-        graph = DesicionGraph(graph_dict, raw_columns, fit, metric_nodes, self.use_step_node)
+        graph = DesicionGraph(graph_dict, raw_columns, fit, metric_nodes)
         # copy the raw columns for transition variables to allow them as input to other nodes
         for curr_name, next_name in graph.transition_map.items():
             raw_columns[next_name] = raw_columns[curr_name]
+
+        # if you use next_obs in graph, without obs as input, then next_obs would lose its description. [typically if you ts_obs instead of obs]
+        # following to fix the above
+        # for node_name in list(graph.keys()):
+        #     if node_name.startswith("next_"):
+        #         ori_name = node_name[5:]
+        #         if ori_name not in graph.leaf and "ts_"+ori_name in graph.leaf:
+        #             raw_columns[node_name] = raw_columns[ori_name]
 
         # mark tunable parameters
         for node_name in raw_config['metadata'].get('tunable', []): graph.mark_tunable(node_name)
@@ -583,7 +624,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         # expert_functions = raw_config['metadata'].get('expert_functions',{})
         custom_nodes = raw_config['metadata'].get('custom_nodes', None)
 
-        def get_function_type(file_path : str, function_name : str) -> str:
+        def get_function_type(file_path : str, function_name : str, file_name: str) -> str:
             '''get the function type from type hint'''
             with open(file_path, 'r') as f:
                 for line in f.readlines():
@@ -607,13 +648,37 @@ class OfflineDataset(torch.utils.data.Dataset):
                     graph.register_node(node_name, FunctionDecisionNode)
                     file_name, function_name = function_description['node_function'].split('.')
                     file_path = os.path.join(os.path.dirname(self.config_file), file_name + '.py')
-                    function_type = get_function_type(file_path, function_name)
+                    function_type = get_function_type(file_path, function_name, file_name)
                     parse_file_path = file_path[:-3]+"_parsed.py"
                     if not parser(file_path,parse_file_path,self.config_file):
                         parse_file_path = file_path
-                    function_type = get_function_type(parse_file_path, function_name)
+                    function_type = get_function_type(parse_file_path, function_name, file_name)
                     file_name = os.path.split(os.path.splitext(parse_file_path)[0])[-1]
                     sys.path.insert(0, os.path.dirname(parse_file_path))
+                    source_file = importlib.import_module(f'{file_name}')
+                    print(source_file)
+                    func = eval(f'source_file.{function_name}')
+                    graph.get_node(node_name).register_node_function(func, function_type)
+                    logger.info(f'register node function ({function_type} version) for {node_name}')
+
+        for node_name in list(graph.keys()):
+            if node_name.startswith("next_ts_"):
+                ori_name = node_name[8:]
+                if set(graph.graph_dict[node_name]) == set(["ts_"+ori_name, "next_"+ori_name]) and (node_name not in self.expert_functions):
+                    # automatically register expert functions to this node
+                    graph.register_node(node_name, FunctionDecisionNode)
+                    func_description = "next_ts_function.next_ts_placeholder_transition_function"
+                    file_name, function_name = func_description.split('.')
+                    function_name = function_name.replace("placeholder", ori_name)
+                    shutil.copyfile(os.path.join(os.path.dirname(revive.__file__),"./common/next_ts_function.py"),  os.path.join(os.path.dirname(self.config_file), "./next_ts_function.py"))
+                    file_path = os.path.join(os.path.dirname(self.config_file), file_name + '.py')
+                    with open(file_path, 'r+') as file:
+                        data = file.read()
+                        genral_func = data[data.find('def'):]
+                        new_func = '\n\n' + genral_func.replace("placeholder", ori_name)
+                        file.write(new_func)
+                    function_type = get_function_type(file_path, function_name, file_name)
+                    sys.path.insert(0, os.path.dirname(file_path))
                     source_file = importlib.import_module(f'{file_name}')
                     func = eval(f'source_file.{function_name}')
                     graph.get_node(node_name).register_node_function(func, function_type)

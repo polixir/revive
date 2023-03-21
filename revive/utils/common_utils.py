@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2023 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -333,6 +333,7 @@ def generate_rollout(expert_data : Batch,
     NOTE: this function will mantain the last dimension even if it is 1
     """
 
+
     assert traj_length <= expert_data.shape[0], 'cannot generate trajectory beyond expert data'
 
     expert_data = deepcopy(expert_data)
@@ -366,6 +367,78 @@ def generate_rollout(expert_data : Batch,
         # NOTE: this will make the rollout a bit slower.
         #       Remove it if you are sure no explosion will happend.
         for k, v in current_batch.items():
+            if "dist" in k:
+                continue
+            has_inf = torch.any(torch.isinf(v))
+            has_nan = torch.any(torch.isnan(v))
+            if has_inf or has_nan:
+                logger.warning(f'During rollout detect anomaly data: key {k}, has inf {has_inf}, has nan {has_nan}')
+                logger.warning(f'Should generated rollout with length {traj_length}, early stop for only length {i}')
+                break
+
+        generated_data.append(current_batch)
+
+        if i == traj_length - 1 : break
+        current_batch = expert_data[i+1] # clone to new Batch
+        current_batch.update(graph.state_transition(generated_data[-1]))
+
+    generated_data = Batch.stack(generated_data)
+    return generated_data
+
+def generate_rollout_bc(expert_data : Batch, 
+                     graph : DesicionGraph, 
+                     traj_length : int, 
+                     sample_fn=lambda dist: dist.sample(), 
+                     adapt_stds=None,
+                     clip : Union[bool, float] = False,
+                     use_target : bool = False):
+    """
+    Generate trajectories based on current policy.
+    :param expert_data: samples from the dataset.
+    :param graph: the computation graph
+    :param traj_length: trajectory length
+    :param sample_fn: sample from a distribution.
+    :return: batch trajectories.
+    NOTE: this function will mantain the last dimension even if it is 1
+    """
+
+
+    assert traj_length <= expert_data.shape[0], 'cannot generate trajectory beyond expert data'
+
+    expert_data = deepcopy(expert_data)
+    if adapt_stds is None:
+        adapt_stds = [None] * (len(graph))
+
+    graph.reset()
+
+    generated_data = []
+    current_batch = expert_data[0]
+
+    for i in range(traj_length):
+        for node_name, adapt_std in zip(list(graph.keys()), adapt_stds):
+            if graph.get_node(node_name).node_type == 'network':
+                action_dist = graph.compute_node(node_name, current_batch, adapt_std=adapt_std, use_target=use_target, field='bc')
+                action = sample_fn(action_dist)
+                if isinstance(clip,bool) and clip: 
+                    action = torch.clamp(action, -1, 1)
+                elif isinstance(clip, float):
+                    action = torch.clamp(action, -clip, clip)
+                else:
+                    pass
+                current_batch[node_name] = action
+                action_log_prob = action_dist.log_prob(action).unsqueeze(dim=-1).detach() # TODO: do we need this detach?
+                current_batch[node_name + "_log_prob"] = action_log_prob
+                current_batch[node_name + "_dist" + f"_{i}"] = action_dist
+            else:
+                action = graph.compute_node(node_name, current_batch)
+                current_batch[node_name] = action
+
+        # check the generated current_batch
+        # NOTE: this will make the rollout a bit slower.
+        #       Remove it if you are sure no explosion will happend.
+        for k, v in current_batch.items():
+            if "dist" in k:
+                continue
             has_inf = torch.any(torch.isinf(v))
             has_nan = torch.any(torch.isnan(v))
             if has_inf or has_nan:
@@ -807,6 +880,7 @@ def save_rollout_action(rollout_save_path: str,
                 if node in nodes_map.keys():
                     expert_data.pop(ts_node)
                     generated_data.pop(ts_node)
+                    nodes_map.pop(ts_node)
                 else:
                     nodes_map[node] = [c[c.index("_")+1:]for c in nodes_map[ts_node]]
                     expert_data[node] = expert_data[ts_node][...,-len(nodes_map[node]):]
@@ -817,6 +891,7 @@ def save_rollout_action(rollout_save_path: str,
                 if "next_" + node in nodes_map.keys():
                     expert_data.pop("next_" + ts_node)
                     generated_data.pop("next_" +ts_node)
+                    nodes_map.pop("next_" +ts_node)
                 else:
                     nodes_map["next_" +node] = [c[c.index("_")+1:]for c in nodes_map["next_" +ts_node]]
                     expert_data["next_" +node] = expert_data["next_" +ts_node][...,-len(nodes_map["next_" + node]):]
@@ -1204,5 +1279,71 @@ def plot_response_curve(response_curve_path, graph_train, graph_val, dataset, de
                         os.makedirs(response_curve_node_path)
                     plt.savefig(os.path.join(response_curve_node_path, f"{node_name}_on_{input_name}.png"), bbox_inches='tight')
 
+def response_curve(response_curve_path, venv, dataset, device, obs_sample_num=16):
+    def generate_response_outputs(generated_inputs: defaultdict, expert_data: Batch, venv: VirtualEnvDev):
+        generated_inputs = deepcopy(generated_inputs)
+        graph = venv.graph
+        generated_outputs_train = defaultdict(dict)
+        with torch.no_grad():
+            for node_name in list(graph.keys()):
+                if graph.get_node(node_name).node_type == 'network':
+                    input_names = graph.get_node(node_name).input_names
+                    inputs_dict = graph.get_node(node_name).get_inputs(generated_inputs)  # Dict[str: Dict[tuple: np.ndarray]]
+                    for input_name in input_names:
+                        for dim, index in list(inputs_dict[input_name].keys()):
+                            state_dict = {}
+                            state_dict[input_name] = inputs_dict[input_name][(dim, index)]
+                            state_dict.update({name: np.repeat(np.expand_dims(expert_data[name][index], axis=0), repeats=state_dict[input_name].shape[0], axis=0) 
+                                                    for name in input_names if name != input_name})
+                            generated_outputs_train[node_name][(dim, index, input_name)] = venv.node_infer(node_name, state_dict)
+        return generated_outputs_train
 
+    if not os.path.exists(response_curve_path):
+        os.makedirs(response_curve_path)
+
+    dataset = deepcopy(dataset)
+
+    venv.to(device)
+    graph = venv.graph
+    graph.reset()
+
+    indexes = np.random.choice(dataset.shape[0], size=(obs_sample_num, ), replace=False)
+    expert_data = dataset[indexes]  # numpy array
+
+    generated_inputs, dim_perturbations = generate_response_inputs(expert_data, dataset, graph, obs_sample_num)
+    generated_outputs = generate_response_outputs(generated_inputs, expert_data, venv)
+
+    obs_sample_num_per_dim = int(np.sqrt(obs_sample_num))
+    with torch.no_grad():
+        for node_name in list(graph.keys()):
+            if graph.get_node(node_name).node_type == 'network':
+                input_names = graph.get_node(node_name).input_names
+                output_dims = dataset[node_name].shape[-1]
+                for input_name in input_names:
+                    input_dims = dataset[input_name].shape[-1]
+                    # plot
+                    fig = plt.figure(figsize=(8 * input_dims, 10 * output_dims))  # (width, height)
+                    blue_patch = mpatches.Patch(color='blue', label='venv')
+                    outer = gridspec.GridSpec(output_dims, input_dims, wspace=0.2, hspace=0.2)
+                    for output_dim in range(output_dims):
+                        for input_dim in range(input_dims):
+                            dim_perturbation = dim_perturbations[input_name][input_dim]
+                            outer_index = output_dim * input_dims + input_dim
+                            inner = gridspec.GridSpecFromSubplotSpec(obs_sample_num_per_dim, obs_sample_num_per_dim, subplot_spec=outer[outer_index], wspace=0.2, hspace=0.2)
+                            outer_ax = plt.Subplot(fig, outer[outer_index])
+                            outer_ax.axis('off')
+                            fig.add_subplot(outer_ax)
+                            for index in range(obs_sample_num):
+                                ax = plt.Subplot(fig, inner[index])
+                                if output_dim == 0 and input_dim == 0 and index == 0:
+                                    ax.legend(handles=[blue_patch, ], loc="upper left")
+                                output = generated_outputs[node_name][(input_dim, index, input_name)][:, output_dim]
+                                line1, = ax.plot(dim_perturbation, output, color='blue')
+                                fig.add_subplot(ax)
+                            outer_ax.set_title(f"{node_name}_dim: {output_dim}, {input_name}_dim: {input_dim}", )
+
+                    response_curve_node_path = os.path.join(response_curve_path, node_name)
+                    if not os.path.exists(response_curve_node_path):
+                        os.makedirs(response_curve_node_path)
+                    plt.savefig(os.path.join(response_curve_node_path, f"{node_name}_on_{input_name}.png"), bbox_inches='tight')
 

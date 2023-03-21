@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2023 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -195,7 +195,7 @@ class ReviveServer:
         if target_policy_name is None:
             target_policy_name = list(self.config['graph'].keys())[0]
             logger.warning(f"Target policy name [{target_policy_name}] is chosen as default")
-        self.config['target_policy_name'] = target_policy_name
+        self.config['target_policy_name'] = target_policy_name.split(',')
 
         ''' save a copy of the base graph '''
         with open(os.path.join(self.workspace, 'graph.pkl'), 'wb') as f:
@@ -245,9 +245,14 @@ class ReviveServer:
                     graph = deepcopy(self.graph)
                     graph.copy_graph_node(_venv.graph)
                     venv_list.append(VirtualEnvDev(graph))
-                if return_graph:
-                    return graph             
                 self.venv = VirtualEnv(venv_list)
+                # if return_graph:
+                #     return graph
+            
+            if return_graph:
+                graph = deepcopy(self.graph)
+                graph.copy_graph_node(self.venv.graph)
+                return graph              
 
             ray.get(self.venv_data_buffer.set_best_venv.remote(self.venv))
         except Exception as e:
@@ -274,7 +279,9 @@ class ReviveServer:
         """
 
         self.train_venv()
+        logger.info(f"venv training finished !")
         self.train_policy(env_save_path)
+        logger.info(f"policy training finished !")
         self.tune_parameter(env_save_path)
 
     def train_venv(self):
@@ -310,6 +317,7 @@ class ReviveServer:
             if self.config["venv_algo"] == "revive":
                 self.config["venv_algo"] = "revive_p"
             logger.remove()
+            logger.info(f"Are you done ?")
             if self.venv_mode == 'once':
                 venv_trainer = ray.remote(VenvTrain).remote(self.config, self.venv_logger, command=sys.argv[1:])
                 venv_trainer.train.remote()
@@ -318,6 +326,7 @@ class ReviveServer:
                 self.venv_trainer = ray.remote(TuneVenvTrain).remote(self.config, self.venv_logger, command=sys.argv[1:])
                 self.venv_trainer.train.remote()
             logger.add(self.revive_log_path)
+
             
     def train_policy(self, env_save_path : Optional[str] = None):
         r"""

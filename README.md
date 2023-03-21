@@ -2,7 +2,7 @@
 
 POLIXIR REVIVE is released subject to the [POLIXIR Commercial License](./License_en.txt), unless otherwise indicated. Please read and agree the accompanying license file carefully before downloading, installing or using the Polixir software or any accompanying files.
 
-Unless otherwise noted, all files Copyright © 2021 - 2022 Polixir Technologies, Co., Ltd.
+Unless otherwise noted, all files Copyright © 2021 - 2023 Polixir Technologies, Co., Ltd.
 
 
 # Introduction

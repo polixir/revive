@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2023 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -225,9 +225,13 @@ class Parameter(zoopt.Parameter):
             ToolFunction.log('parameter.py: budget too small')
             sys.exit(1)
         else:
-            self.__train_size = self.parallel_num
-            self.__positive_size = max(int(0.2 * self.parallel_num),1)
-        self.__negative_size = self.__train_size - self.__positive_size
+            if self.parallel_num < 4:
+                super(Parameter, self).auto_set(budget)
+                return 
+            else:
+                self.__train_size = self.parallel_num
+                self.__positive_size = max(int(0.2 * self.parallel_num),1)
+                self.__negative_size = self.__train_size - self.__positive_size
 
 
 class ZOOptSearch(_ZOOptSearch):

@@ -1,6 +1,6 @@
 ''''''
 """
-    POLIXIR REVIVE, copyright (C) 2021-2022 Polixir Technologies Co., Ltd., is 
+    POLIXIR REVIVE, copyright (C) 2021-2023 Polixir Technologies Co., Ltd., is 
     distributed under the GNU Lesser General Public License (GNU LGPL). 
     POLIXIR REVIVE is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -184,8 +184,8 @@ class VirtualEnvDev(torch.nn.Module):
                 else:
                     data[node_name] = sample_fn(output)
                 if clip: data[node_name] = torch.clamp(data[node_name], -1, 1)
-            else:
-                print(f'Skip {node_name}, since it is provided in the inputs.')
+            # else:
+            #     print(f'Skip {node_name}, since it is provided in the inputs.')
 
         return data
 
