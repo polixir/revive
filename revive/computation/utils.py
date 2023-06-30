@@ -82,7 +82,6 @@ def to_numpy(x : Tuple[np.ndarray, torch.Tensor]) -> np.ndarray:
 
 def to_torch(x : Tuple[np.ndarray, torch.Tensor], dtype=torch.float32, device : str = "cpu") -> torch.Tensor:
     """Return an object without torch.Tensor."""
-
     if isinstance(x, torch.Tensor):
         if dtype is not None:
             x = x.type(dtype)

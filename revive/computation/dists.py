@@ -28,6 +28,7 @@ from pyro.distributions.kl import register_kl, kl_divergence
 from itertools import groupby
 
 def all_equal(iterable):
+    ''' Define a function to check if all elements in an iterable are equal'''
     g = groupby(iterable)
     return next(g, True) and not next(g, False)
 
@@ -48,7 +49,6 @@ def exportable_broadcast(tensor1 : torch.Tensor, tensor2 : torch.Tensor) -> Tupl
 
 class ReviveDistributionMixin:
     '''Define revive distribution API'''
-
     @property
     def mode(self,):
         '''return the most likely sample of the distributions'''
@@ -68,13 +68,14 @@ class ReviveDistribution(pyro.distributions.TorchDistribution, ReviveDistributio
 
 class ExportableNormal(Normal):
     def __init__(self, loc, scale, validate_args):
+        """ Use exportable_broadcast() aligns the shape of the tensor """
         self.loc, self.scale = exportable_broadcast(loc, scale)
-        # batch_shape = torch.Size(loc.shape[:-1])
         batch_shape = self.loc.size()
         super(Normal, self).__init__(batch_shape, validate_args=validate_args)
 
 class ExportableCategorical(Categorical):
     def log_prob(self, value):
+        """ Use exportable_broadcast() aligns the shape of the tensor """
         if self._validate_args:
             self._validate_sample(value)
         value = value.long().unsqueeze(-1)
@@ -355,7 +356,9 @@ def _kl_diagnalnormal_diagnalnormal(p : DiagnalNormal, q : DiagnalNormal):
 
 @register_kl(Onehot, Onehot)
 def _kl_onehot_onehot(p : Onehot, q : Onehot):
-    kl = (p.probs * (torch.log(p.probs) - torch.log(q.probs))).sum(dim=-1)
+    p_probs = p.probs.clamp_min(1e-30)
+    q_probs = q.probs.clamp_min(1e-30)
+    kl = (p_probs * (torch.log(p_probs) - torch.log(q_probs))).sum(dim=-1)
     return kl
 
 @register_kl(GaussianMixture, GaussianMixture)

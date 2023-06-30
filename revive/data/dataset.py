@@ -22,6 +22,7 @@ from copy import deepcopy
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple, Union
 from matplotlib.pyplot import step
+import time
 
 import numpy as np
 import pandas as pd
@@ -36,7 +37,7 @@ from revive.computation.funs_parser import parser
 from revive.computation.graph import *
 from revive.data.batch import Batch
 from revive.data.processor import DataProcessor
-from revive.utils.common_utils import find_later, load_data, plot_traj, import_model_from_file
+from revive.utils.common_utils import find_later, load_data, plot_traj, PositionalEncoding, create_unit_vector, generate_bin_encoding
 
 DATADIR = os.path.abspath(os.path.join(os.path.dirname(revive.__file__), '../data/'))
 
@@ -52,6 +53,7 @@ class OfflineDataset(torch.utils.data.Dataset):
 
     def __init__(self, data_file : str,
                        config_file : str,
+                       revive_config : dict,
                        ignore_check : bool = False,
                        horizon : int = None,
                        reward_func = None):
@@ -59,6 +61,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         self.config_file = config_file
         self.ignore_check = ignore_check
         self.reward_func = reward_func
+        self.revive_config = revive_config
 
         self._raw_data = None
         self._raw_config = None
@@ -69,6 +72,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         self.graph.ts_nodes = self.ts_nodes
         self.graph.ts_node_frames = self.ts_node_frames
         self.graph.freeze_nodes = getattr(self, "freeze_nodes", [])
+        self.graph.nodes_loss_type = getattr(self, "nodes_loss_type", {})
         
         # pop up unused keys
         used_keys = list(self.graph.keys()) + self.graph.leaf + ['done']
@@ -131,18 +135,22 @@ class OfflineDataset(torch.utils.data.Dataset):
             ############################ append step node ############################
             step_node_config = {k:v["step_input"] for k,v in nodes_config.items() if "step_input" in v.keys() }
             if step_node_config:
+                pos_emd_flag = self.revive_config["use_time_step_embed"]
                 assert "step_node_" not in raw_data.keys()
                 trj_index = [0,] + list(raw_data["index"])
+                max_traj_len = np.max(np.array(trj_index[1:]) - np.array(trj_index[:-1]))
                 step_node_data_list = []
-                max_traj_len = 0
+                if pos_emd_flag:
+                    d_model = self.revive_config["time_step_embed_size"]
+                    pos_emd = PositionalEncoding(d_model=d_model, max_len=max_traj_len)
                 for trj_start_index, trj_end_index in zip(trj_index[:-1], trj_index[1:]):
-                    max_traj_len = max(max_traj_len, trj_end_index-trj_start_index)
-                    step_node_data_list.append(np.arange(0, trj_end_index-trj_start_index).reshape(-1,1))
-                step_node_data = np.concatenate(step_node_data_list,axis=0)
+                    step_index = np.arange(0, trj_end_index-trj_start_index).reshape(-1,1)
+                    if pos_emd_flag:
+                        step_index = pos_emd.encode(step_index)
+                    step_node_data_list.append(step_index)
 
-                raw_data["step_node_"] = step_node_data
-                raw_config['metadata']['columns'] += [{'step_node_': {'dim': 'step_node_', 'type': 'continuous', 'min': 0, 'max': max_traj_len*2}},]
-                raw_config['metadata']['graph']['next_step_node_'] = ['step_node_']
+                raw_data["step_node_"] = np.concatenate(step_node_data_list, axis=0)
+                raw_config['metadata']['columns'] += [{'step_node_': {'dim': 'step_node_', 'type': 'continuous', 'min': 0, 'max': max_traj_len*2}},] if not pos_emd_flag else [{f'step_node_{i}': {'dim': 'step_node_', 'type': 'continuous', 'min': -1, 'max': 1}} for i in range(d_model)]
 
                 for node, step_node_flag in step_node_config.items():
                     if node not in graph_dict.keys():
@@ -151,11 +159,14 @@ class OfflineDataset(torch.utils.data.Dataset):
                         logger.info(f"Append step_node data as the {node} node's input.")
                         graph_dict[node] = graph_dict[node] + ["step_node_",]
                         use_step_node = True
+
                 # append step_node_function
                 if use_step_node:
-                    # self.expert_functions = raw_config['metadata'].get('expert_functions',{})
-                    shutil.copyfile(os.path.join(os.path.dirname(revive.__file__),"./common/step_node_function.py"),  os.path.join(os.path.dirname(self.config_file), "./step_node_function.py"))
-                    self.expert_functions['next_step_node_'] = {"node_function": "step_node_function.get_next_step_node"}
+                    if not pos_emd_flag:
+                        raw_config['metadata']['graph']['next_step_node_'] = ['step_node_']
+                        # self.expert_functions = raw_config['metadata'].get('expert_functions',{})
+                        shutil.copyfile(os.path.join(os.path.dirname(revive.__file__),"./common/step_node_function.py"),  os.path.join(os.path.dirname(self.config_file), "./step_node_function.py"))
+                        self.expert_functions['next_step_node_'] = {"node_function": "step_node_function.get_next_step_node"}
 
                 self._raw_config = raw_config
                 self._raw_data = raw_data
@@ -220,11 +231,41 @@ class OfflineDataset(torch.utils.data.Dataset):
                 
                 self._raw_config = raw_config
                 self._raw_data = raw_data
+                # breakpoint()
             ##################################################################
+
+            ############################ trajectory_id #################
+            # collect nodes config
+            traj_id_node_config = {k:v["traj_id"] for k,v in nodes_config.items() if "traj_id" in v.keys()}
+            if traj_id_node_config:
+                traj_id_emd_flag = self.revive_config["use_traj_id_embed"]
+                traj_index = [0,] + list(raw_data["index"])
+                start_indexes = traj_index[:-1]
+                end_indexes = traj_index[1:]
+                traj_num = len(start_indexes)
+                if traj_id_emd_flag:
+                    traj_encodings = generate_bin_encoding(traj_num)
+                traj_ids = []
+                for i_traj in range(traj_num):
+                    if traj_id_emd_flag:
+                        traj_ids.append(np.ones((end_indexes[i_traj] - start_indexes[i_traj], 1)) * traj_encodings[i_traj])
+                    else:
+                        traj_ids.append(np.ones((end_indexes[i_traj] - start_indexes[i_traj], 1)) * i_traj)
+                raw_data['traj'] = np.concatenate(traj_ids)
+                raw_config['metadata']['columns'] += [{'traj': {'dim': 'traj', 'type': 'continuous', 'min': 0, 'max': len(start_indexes)-1}},] if not traj_id_emd_flag else [{f'traj_{i}': {'dim': 'traj', 'type': 'discrete', 'min': 0, 'max': 1, 'num': 2}} for i in range(traj_encodings.shape[1])]
+                for node, _ in traj_id_node_config.items():
+                    raw_config['metadata']['graph'][node].append('traj')
+
+                self._raw_config = raw_config
+                self._raw_data = raw_data
+            ##################################################################
+
             ############################ collect freeze node #################
             # collect nodes config
             self.freeze_nodes = [k for k,v in nodes_config.items() if "freeze" in v.keys() and v["freeze"]]
             logger.info("Freeze the following nodes without training -> {self.freeze_nodes}")
+            self.nodes_loss_type = {k:v["loss_type"] for k,v in nodes_config.items() if "loss_type" in v.keys() and v["loss_type"]}
+            logger.info(f"Nodes loss type -> {self.nodes_loss_type}")
             ##################################################################
 
     def _check_data(self):
@@ -352,17 +393,17 @@ class OfflineDataset(torch.utils.data.Dataset):
             self.data.pop(nodata_node_name)
 
     def compute_missing_data(self, need_truncate):
-        processed_nodes = []
-        new_data = {k : [] for k in self.data.keys()}
-        for node_name in self.graph.transition_map.values(): 
-            new_data[node_name] = []
-
         if need_truncate:
+            new_data = {k : [] for k in self.data.keys()}
+            for node_name in self.graph.transition_map.values():
+                new_data[node_name] = []
             for start, end in zip(self._start_indexes, self._end_indexes):
                 for k in self.data.keys():
                     new_data[k].append(self.data[k][start:end-1])
-            for k in self.data.keys(): 
+            for k in self.data.keys():
                 new_data[k] = np.concatenate(new_data[k], axis=0)
+        else:
+            new_data = deepcopy(self.data)
 
         for node_name in self.graph.graph_list:
             if node_name not in self.data.keys():
@@ -379,24 +420,27 @@ class OfflineDataset(torch.utils.data.Dataset):
                     new_data[node_name] = np.array(output).astype(np.float32)
                 elif node_name.startswith("next_"):
                     # next_ processing
+                    assert need_truncate == True, f"need_truncate == False, however {node_name} is missing in data"
                     ori_name = node_name[5:]
                     warnings.warn(f'transition variable {node_name} is not provided and cannot be computed!')
-                    processed_nodes.append(ori_name)
                     for start, end in zip(self._start_indexes, self._end_indexes):
                         new_data[node_name].append(self.data[ori_name][start+1:end])
                     new_data[node_name] = np.concatenate(new_data[node_name], axis=0)
                 elif node.node_type == 'network':
                     # this is for handling empty node 
+                    logger.warning(f"Detect {node_name} as empty node !")
                     continue
                 else:
                     logger.error(f"Node {node_name} is not neither next_ node nor expert node. And {node_name} is missing in data. Please check the dataset file !")
                     raise NotImplementedError
 
-        self._start_indexes -= np.arange(self._start_indexes.shape[0])
-        self._end_indexes -= np.arange(self._end_indexes.shape[0]) + 1
-        self._traj_lengths -= 1
-        self._min_length -= 1
-        self._max_length -= 1
+        if need_truncate:
+            self._start_indexes -= np.arange(self._start_indexes.shape[0])
+            self._end_indexes -= np.arange(self._end_indexes.shape[0]) + 1
+            self._traj_lengths -= 1
+            self._min_length -= 1
+            self._max_length -= 1
+
         self.data = Batch(new_data)
 
     def _load_data(self, data_file : str):
@@ -523,7 +567,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         self.fix_sample = True
         return self
 
-    def trajectory_mode_(self, horizon : Optional[int] = None, fix_sample : bool = True):
+    def trajectory_mode_(self, horizon : Optional[int] = None, fix_sample : bool = False):
         r''' Set the dataset in trajectory mode. `__getitem__` will return a clip of trajectory. '''
         self.end_indexes = self._end_indexes
         self.start_indexes = self._start_indexes
@@ -638,8 +682,8 @@ class OfflineDataset(torch.utils.data.Dataset):
                             return 'numpy'
             raise ValueError(f'Cannot find function {function_name} in {file_name}.py, please check your yaml!')
         
-        later = find_later(self.config_file, 'data')
-        head = '.'.join(later[:-1])
+        # later = find_later(self.config_file, 'data')
+        # head = '.'.join(later[:-1])
         # register expert functions to the graph
         if self.expert_functions is not None:
             for node_name, function_description in self.expert_functions.items():
@@ -656,7 +700,6 @@ class OfflineDataset(torch.utils.data.Dataset):
                     file_name = os.path.split(os.path.splitext(parse_file_path)[0])[-1]
                     sys.path.insert(0, os.path.dirname(parse_file_path))
                     source_file = importlib.import_module(f'{file_name}')
-                    print(source_file)
                     func = eval(f'source_file.{function_name}')
                     graph.get_node(node_name).register_node_function(func, function_type)
                     logger.info(f'register node function ({function_type} version) for {node_name}')
@@ -667,10 +710,10 @@ class OfflineDataset(torch.utils.data.Dataset):
                 if set(graph.graph_dict[node_name]) == set(["ts_"+ori_name, "next_"+ori_name]) and (node_name not in self.expert_functions):
                     # automatically register expert functions to this node
                     graph.register_node(node_name, FunctionDecisionNode)
-                    func_description = "next_ts_function.next_ts_placeholder_transition_function"
+                    func_description = "next_ts_transition_function.next_ts_placeholder_transition_function"
                     file_name, function_name = func_description.split('.')
                     function_name = function_name.replace("placeholder", ori_name)
-                    shutil.copyfile(os.path.join(os.path.dirname(revive.__file__),"./common/next_ts_function.py"),  os.path.join(os.path.dirname(self.config_file), "./next_ts_function.py"))
+                    shutil.copyfile(os.path.join(os.path.dirname(revive.__file__),"./common/next_ts_transition_function.py"),  os.path.join(os.path.dirname(self.config_file), "./next_ts_transition_function.py"))
                     file_path = os.path.join(os.path.dirname(self.config_file), file_name + '.py')
                     with open(file_path, 'r+') as file:
                         data = file.read()
@@ -679,6 +722,28 @@ class OfflineDataset(torch.utils.data.Dataset):
                         file.write(new_func)
                     function_type = get_function_type(file_path, function_name, file_name)
                     sys.path.insert(0, os.path.dirname(file_path))
+                    time.sleep(1)
+                    source_file = importlib.import_module(f'{file_name}')
+                    func = eval(f'source_file.{function_name}')
+                    graph.get_node(node_name).register_node_function(func, function_type)
+                    logger.info(f'register node function ({function_type} version) for {node_name}')
+
+                if set(graph.graph_dict[node_name]) == set(["ts_"+ori_name, ori_name]) and (node_name not in self.expert_functions):
+                    # automatically register expert functions to this node
+                    graph.register_node(node_name, FunctionDecisionNode)
+                    func_description = "next_ts_policy_function.next_ts_placeholder_policy_function"
+                    file_name, function_name = func_description.split('.')
+                    function_name = function_name.replace("placeholder", ori_name)
+                    shutil.copyfile(os.path.join(os.path.dirname(revive.__file__),"./common/next_ts_policy_function.py"),  os.path.join(os.path.dirname(self.config_file), "./next_ts_policy_function.py"))
+                    file_path = os.path.join(os.path.dirname(self.config_file), file_name + '.py')
+                    with open(file_path, 'r+') as file:
+                        data = file.read()
+                        genral_func = data[data.find('def'):]
+                        new_func = '\n\n' + genral_func.replace("placeholder", ori_name)
+                        file.write(new_func)
+                    function_type = get_function_type(file_path, function_name, file_name)
+                    sys.path.insert(0, os.path.dirname(file_path))
+                    time.sleep(1)
                     source_file = importlib.import_module(f'{file_name}')
                     func = eval(f'source_file.{function_name}')
                     graph.get_node(node_name).register_node_function(func, function_type)
@@ -690,7 +755,9 @@ class OfflineDataset(torch.utils.data.Dataset):
                 # NOTE: currently we assume the custom nodes are also placed in the same folder as the yaml file.
                 # `custom node should be given in the form of [file].[node_class_name]`
                 file_name, class_name = custom_node.split('.')
-                source_file = importlib.import_module(f'{head}.{file_name}')
+                file_path = os.path.join(os.path.dirname(self.config_file), file_name + '.py')
+                sys.path.insert(0, os.path.dirname(file_path))
+                source_file = importlib.import_module(f'{file_name}')
                 node_class = eval(f'source_file.{class_name}')
                 graph.register_node(node_name, node_class)
                 logger.info(f'register custom node `{node_class}` for {node_name}')

@@ -23,12 +23,14 @@ from pyarmor.pytransform import show_hd_info,pyarmor_init
 
 def get_machine_info(output="./machine_info.json", online=False):
     r"""
-    Use pyarmor register a License.
+    Retrieves machine information using pyarmor.
 
     Args:
+        output (str): The path to save the machine information as a json file. Defaults to "./machine_info.json".
+        online (bool): Whether to return the machine information as a string instead of saving it to a file. Defaults to False.
 
-    output : A json file with machine information generated using revive sdk. E.g. : "/home/machine_info.json"
-   
+    Returns:
+        str: A string containing machine information if online is True, else None.
     """
     assert output.endswith(".json"), f"Machine info should be saved as a json file. -> {output}"
 

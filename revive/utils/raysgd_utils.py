@@ -19,6 +19,9 @@ BATCH_SIZE = "*batch_size"
 
 
 class AverageMeter:
+    """
+    Computes and stores the average and current value.
+    """
     def __init__(self):
         self.reset()
 
@@ -36,6 +39,9 @@ class AverageMeter:
         self.avg = self.sum / self.count
 
 class AverageMeterCollection:
+    """
+    This is a class called AverageMeterCollection that calculates and stores the average metrics for a collection of meters.
+    """
     def __init__(self):
         self._batch_count = 0
         self.n = 0

@@ -283,6 +283,8 @@ class PolicyOperator():
         Return:
              (train_loader, val_loader)
         """
+        # raise NotImplementedError
+        logger.warning('data_creator is using the test_horizon' )
         return data_creator(config, val_horizon=config['test_horizon'], double=self.double_validation)
 
     def _setup_data(self, config : Dict[str, Any]):
@@ -345,7 +347,6 @@ class PolicyOperator():
                 except:
                     self.val_models[model_index] = model.to(self._device)
             self.val_optimizers = self.optimizer_creator(self.val_models, config)
-
             for train_node,policy in zip(self.train_nodes.values(), self.policy):
                 train_node.set_network(policy)
             for val_node,policy in zip(self.val_nodes.values(), self.val_policy):
@@ -397,6 +398,8 @@ class PolicyOperator():
         else:
             self._traj_id = 1
             self._traj_dir = os.path.join(self._workspace, 'policy_train')
+            
+        update_env_vars("pattern", "policy")
 
         # setup constant
         self._stop_flag = False
@@ -444,8 +447,8 @@ class PolicyOperator():
                         node.network.dist_mu_shift = mu_shift
                 self.envs_val.append(env_train)       
         else:
-            self.envs_train = self.envs_train[:self.config['num_venv_in_use']]
-            self.envs_val = self.envs_val[:self.config['num_venv_in_use']]
+            self.envs_train = self.envs_train[:int(self.config['num_venv_in_use'])]
+            self.envs_val = self.envs_val[:int(self.config['num_venv_in_use'])]
 
         self.behaviour_nodes = [self.envs[0].graph.get_node(policy_name) for policy_name in self.policy_name]
         self.behaviour_policys =  [behaviour_node.get_network() for behaviour_node in self.behaviour_nodes if behaviour_node.get_network()]
@@ -472,6 +475,12 @@ class PolicyOperator():
         
         self._save_models(self._traj_dir)
         self._update_metric()
+
+        # prepare for ReplayBuffer
+        try:
+            self.setup(config)
+        except:
+            pass
 
         self.action_dims = {}
         for policy_name in self.policy_name:
@@ -583,7 +592,15 @@ class PolicyOperator():
         envs = self.envs_val if "valEnv" in scope  else self.envs_train
         for env in envs:
             generated_data, info = self._run_rollout(expert_data, target_policy, env, traj_length, deterministic=self.config['deterministic_test'], clip=True)
-            reward = generated_data.reward.squeeze(dim=-1)
+            if 'done' in generated_data.keys():
+                temp_done = self._processor.deprocess_single_torch(generated_data['done'], 'done')
+                not_done = ~temp_done.bool()
+                temp_reward = not_done * generated_data.reward
+            else:
+                not_done = torch.ones_like(generated_data.reward)
+                temp_reward = not_done * generated_data.reward
+
+            reward = temp_reward.squeeze(dim=-1)
             t = torch.arange(0, reward.shape[0]).to(reward)
             discount = self.config['test_gamma'] ** t
             discount_reward = torch.sum(discount.unsqueeze(dim=-1) * reward, dim=0)
@@ -638,6 +655,9 @@ class PolicyOperator():
         generated_data = self.generate_rollout(expert_data, target_policy, env, traj_length, maintain_grad_flow, deterministic, clip)
 
         generated_data = generate_rewards(generated_data, reward_fn=lambda data: self._user_func(self._get_original_actions(data)))
+        
+        if "uncertainty" in generated_data.keys():
+            generated_data["reward"] -=  self.config["reward_uncertainty_weight"]*generated_data["uncertainty"]
 
         # If use the action for multi-steps in env.
         if self.config["action_steps"] >= 2:
@@ -704,12 +724,14 @@ class PolicyOperator():
         sample_fn = lambda dist: dist.rsample() if maintain_grad_flow else dist.sample()
 
         if isinstance(env, list):
-            sample_env_nums = min(min(3,len(env)),batch_size)
+            sample_env_nums = min(min(7,len(env)),batch_size)
             env_id = random.sample(range(len(env)), k=sample_env_nums)
             n = int(math.ceil(batch_size / float(sample_env_nums)))
             env_batch_index = [range(batch_size)[i:min(i + n,batch_size)] for i in range(0, batch_size, n)]
 
-        for i in range(traj_length):
+        uncertainty_list = []
+        done = False
+        for i in range(traj_length+1):
             for policy_index, policy_name in enumerate(self.policy_name):
                 if isinstance(env, list):
                     result_batch = []
@@ -718,14 +740,28 @@ class PolicyOperator():
                         if _env_id not in env_id:
                             continue
                         use_env_id += 1
-                        _current_batch = deepcopy(current_batch)[env_batch_index[use_env_id],:]
+                        _current_batch = deepcopy(current_batch)  #[env_batch_index[use_env_id],:]
                         _current_batch = _env.pre_computation(_current_batch, deterministic, clip, policy_index)
                         result_batch.append(_current_batch)
-                    current_batch = Batch.cat(result_batch)
+                    
+                    current_batch = Batch.cat([_current_batch[_env_batch_index,:] for _current_batch,_env_batch_index in zip(result_batch,env_batch_index)])
+                    policy_inputs = [get_input_from_graph(self._graph, policy_name, _current_batch) for _current_batch in result_batch]
+                    policy_inputs = torch.stack(policy_inputs, dim=2)
+                    
+                    policy_inputs_mean = torch.mean(policy_inputs, dim=-1, keepdim=True)
+                    diff = policy_inputs - policy_inputs_mean
+                    uncertainty = torch.max(torch.norm(diff, dim=-1, keepdim=False), dim=1)[0].reshape(-1,1)
+                    
+                    if i > 0:
+                        uncertainty_list.append(uncertainty)
+                    if i == traj_length:
+                        done = True
+                        break
                 else:
                     current_batch = env.pre_computation(current_batch, deterministic, clip, policy_index)
 
-                policy_input = get_input_dict_from_graph(self._graph, policy_name, current_batch) if self.config['policy_node_embed'] else get_input_from_graph(self._graph, policy_name, current_batch)
+                policy_input = get_input_from_graph(self._graph, policy_name, current_batch)
+
                 if 'offlinerl' in str(type(target_policy[policy_index])):
                     action = target_policy[policy_index](policy_input)
                     current_batch[policy_name] = action
@@ -740,8 +776,10 @@ class PolicyOperator():
                     # use the last step action
                     else:
                         current_batch[policy_name + '_log_prob'] = action_log_prob
-                        current_batch[policy_name] = deepcopy(action.detach())    
+                        current_batch[policy_name] = deepcopy(action.detach())      
 
+            if done:
+                break
             if isinstance(env, list):
                 result_batch = []
                 use_env_id = -1
@@ -764,9 +802,15 @@ class PolicyOperator():
             for k in self._graph.leaf: 
                 if not k in self._graph.transition_map.keys(): current_batch[k] = expert_data[i+1][k]
 
+        for current_batch, uncertainty in zip(generated_data, uncertainty_list):
+            current_batch["uncertainty"] = uncertainty
         generated_data = Batch.stack(generated_data)
 
         return generated_data
+    
+    @catch_error
+    def before_train_epoch(self):
+        update_env_vars("policy_epoch",self._epoch_cnt)
 
     @catch_error
     def train_epoch(self):
@@ -818,7 +862,6 @@ class PolicyOperator():
                 else:
                     metrics = self.train_batch(batch, batch_info=batch_info, scope='val')
                 
-
                 metric_meters_val.update(metrics, n=metrics.pop(NUM_SAMPLES, 1))
                 self.global_step += 1
 
@@ -997,6 +1040,7 @@ class PolicyAlgorithm:
             writer = SummaryWriter(algo_operator._traj_dir)
             epoch = 0
             while True:
+                algo_operator.before_train_epoch()
                 train_stats = algo_operator.train_epoch()
                 val_stats = algo_operator.validate()
                 session.report({"mean_accuracy": algo_operator._max_reward,

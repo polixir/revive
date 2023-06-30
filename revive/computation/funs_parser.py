@@ -12,7 +12,7 @@
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
     Lesser General Public License for more details.
 """
-
+""" The function of this document is mainly for use on the SAAS platform, and maintenance will be temporarily suspended in the future."""
 import re
 import yaml
 from shutil import copyfile
@@ -232,7 +232,6 @@ def get_fn_list(origin_code_list):
 def parser(input_file : str,
            output_file : str,
            yaml_file : str):
-    
     global NODES
     NODES = get_nodes(yaml_file)
     
@@ -242,7 +241,7 @@ def parser(input_file : str,
     for code in origin_code_list:
         if code.startswith("import torch"):
             logger.info(f'Not parser function in {input_file}')
-            copyfile(input_file, output_file)
+            # copyfile(input_file, output_file)
             return False
         
     logger.info(f'Parser function in {input_file}')

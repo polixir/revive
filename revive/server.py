@@ -18,6 +18,7 @@ import json
 import uuid
 import socket
 import pickle
+import inspect
 import warnings
 
 from copy import deepcopy
@@ -27,7 +28,7 @@ import ray
 import numpy as np
 from loguru import logger
 
-from revive.utils.common_utils import get_reward_fn, list2parser, setup_seed
+from revive.utils.common_utils import get_reward_fn, get_module, list2parser, setup_seed
 from revive.computation.inference import PolicyModel, VirtualEnv, VirtualEnvDev
 from revive.conf.config import DEBUG_CONFIG, DEFAULT_CONFIG
 from revive.data.dataset import OfflineDataset
@@ -114,6 +115,8 @@ class ReviveServer:
                  dataset_file_path : str,
                  dataset_desc_file_path : str,
                  val_file_path : Optional[str] = None,
+                 user_module_file_path : Optional[str] = None,
+                 matcher_reward_file_path : Optional[str] = None,
                  reward_file_path : Optional[str] = None,
                  target_policy_name : str = None,
                  log_dir : str = None,
@@ -165,6 +168,19 @@ class ReviveServer:
         self.policy_mode = policy_mode
         self.tuning_mode = tuning_mode
         self.tune_initial_state = tune_initial_state
+        
+        self.user_module = get_module(user_module_file_path, dataset_desc_file_path)
+        if self.user_module is not None:
+            functions = inspect.getmembers(self.user_module, inspect.isfunction)
+            function_dict = {name: func for name, func in functions}
+            self.config['user_module'] = function_dict
+        else:
+            self.config['user_module'] = None
+        self.rule_reward_module = get_module(matcher_reward_file_path, dataset_desc_file_path)
+        self.config['rule_reward_func'] = getattr(self.rule_reward_module, "get_reward", None)
+        self.config['rule_reward_func_normalize'] = getattr(self.rule_reward_module, "normalize", False)
+        self.config['rule_reward_func_weight'] = getattr(self.rule_reward_module, "weight", 1.0)
+        self.config['rule_reward_matching_nodes'] = getattr(self.rule_reward_module, "matching_nodes", [])
 
         self.reward_func = get_reward_fn(reward_file_path, dataset_desc_file_path)
         self.config['user_func'] = self.reward_func
@@ -173,13 +189,12 @@ class ReviveServer:
         self.data_file = dataset_file_path
         self.config_file = dataset_desc_file_path
         self.val_file = val_file_path
-        
-        self.dataset = OfflineDataset(self.data_file, self.config_file, self.config['ignore_check'])
+        self.dataset = OfflineDataset(self.data_file, self.config_file, revive_config=self.config, ignore_check=self.config['ignore_check'])
         self._check_license()
         self.runtime_env = {"env_vars": {"PYTHONPATH":os.pathsep.join(sys.path), "PYARMOR_LICENSE": sys.PYARMOR_LICENSE}}
         ray.init(address=address, runtime_env=self.runtime_env)
         if self.val_file:
-            self.val_dataset = OfflineDataset(self.val_file, self.config_file, self.config['ignore_check'])
+            self.val_dataset = OfflineDataset(self.val_file, self.config_file, revive_config=self.config, ignore_check=self.config['ignore_check'])
             self.val_dataset.processor = self.dataset.processor # make sure dataprocessing is the same
             self.config['val_dataset'] = ray.put(self.val_dataset)
         else: # split the training set if validation set is not provided
@@ -196,6 +211,7 @@ class ReviveServer:
             target_policy_name = list(self.config['graph'].keys())[0]
             logger.warning(f"Target policy name [{target_policy_name}] is chosen as default")
         self.config['target_policy_name'] = target_policy_name.split(',')
+        logger.info(f"Target policy name {self.config['target_policy_name']} is chosen as default")
 
         ''' save a copy of the base graph '''
         with open(os.path.join(self.workspace, 'graph.pkl'), 'wb') as f:
@@ -222,6 +238,9 @@ class ReviveServer:
         self.venv_logger = None
         self.policy_logger = None
         self.tuner_logger = None
+
+        # heterogeneous_process init setting
+        self.heterogeneous_process = False
         
         data = {"REVIVE_STOP" : False, "LOG_DIR":os.path.join(os.path.abspath(self.workspace),"revive.log")}
         with open(os.path.join(self.workspace, ".env.json"), 'w') as f:
@@ -248,7 +267,11 @@ class ReviveServer:
                 self.venv = VirtualEnv(venv_list)
                 # if return_graph:
                 #     return graph
-            
+                if self.venv_mode == 'None' and  self.policy_mode != 'None':
+                    self.heterogeneous_process = True
+                else:
+                    self.heterogeneous_process = False
+
             if return_graph:
                 graph = deepcopy(self.graph)
                 graph.copy_graph_node(self.venv.graph)
@@ -326,6 +349,8 @@ class ReviveServer:
                 self.venv_trainer = ray.remote(TuneVenvTrain).remote(self.config, self.venv_logger, command=sys.argv[1:])
                 self.venv_trainer.train.remote()
             logger.add(self.revive_log_path)
+        # breakpoint()
+        # self.venv_mode = None
 
             
     def train_policy(self, env_save_path : Optional[str] = None):
@@ -437,15 +462,15 @@ class ReviveServer:
         self.venv_acc = max(self.venv_acc, venv_acc)
         self.venv = ray.get(self.venv_data_buffer.get_best_venv.remote())
         best_model_workspace = ray.get(self.venv_data_buffer.get_best_model_workspace.remote())
-    
-        if self.venv is not None:
+
+        if self.venv is not None and venv_logger.get('task_state') != 'End':
             with open(os.path.join(self.workspace, 'env.pkl'), 'wb') as f:
                 pickle.dump(self.venv, f)
             try:
                 self.venv.export2onnx(os.path.join(self.workspace, 'env.onnx'), verbose=False)
             except Exception as e:
-                pass
                 logger.info(f"Can't to export venv to ONNX. -> {e}")
+
         status_message = ray.get(self.venv_data_buffer.get_status.remote())
         
         return self.venv, train_log, status_message, best_model_workspace
@@ -492,6 +517,21 @@ class ReviveServer:
                 tmp_policy.export2onnx(os.path.join(self.workspace, 'policy.onnx'), verbose=False)
             except Exception as e:
                 logger.info(f"Can't to export venv to ONNX. -> {e}")
+        
+
+        if self.policy_mode == 'tune': # create by tune
+            self.policy_traj_dir = os.path.join(self.workspace, 'policy_tune')
+        else:
+            self.policy_traj_dir = os.path.join(self.workspace, 'policy_train')
+
+
+        if self.venv is not None and self.heterogeneous_process:
+            try:
+                with open(os.path.join(self.policy_traj_dir, 'env_for_policy.pkl'), 'wb') as f:
+                    pickle.dump(self.venv, f)
+                self.venv.export2onnx(os.path.join(self.policy_traj_dir, 'env_for_policy.onnx'), verbose=False)
+            except Exception as e:
+                logger.info(f"Can't to export venv_of_policy to ONNX. -> {e}")
 
         status_message = ray.get(self.policy_data_buffer.get_status.remote())
 

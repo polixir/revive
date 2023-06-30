@@ -1,3 +1,4 @@
+from __future__ import annotations
 ''''''
 """
     POLIXIR REVIVE, copyright (C) 2021-2023 Polixir Technologies Co., Ltd., is 
@@ -12,7 +13,6 @@
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
     Lesser General Public License for more details.
 """
-from __future__ import annotations
 from abc import ABC, abstractmethod
 from operator import itemgetter
 from typing import Any, Callable, Dict, Iterable, Optional, Union, Tuple, List
@@ -49,6 +49,8 @@ _CIT_METHODS = {
 
 
 """ causal discovery methods """
+
+
 # constraint-based
 def pc(
     data: np.ndarray,
@@ -272,6 +274,7 @@ def ges(
 _AVAILABLE_SEARCH_METHODS = [
     "astar", "dp",
 ]
+
 
 def exact_search(
     data: np.ndarray,
@@ -584,16 +587,17 @@ class ClassicalDiscovery(DiscoveryModule):
         :param residual: bool, whether use residual as next states (only for transition data)
         """
         super().__init__(**kwargs)
+
         assert alg in ClassicalDiscovery.CLASSICAL_ALGOS \
             or alg in ClassicalDiscovery.CLASSICAL_ALGOS_TRANSITION, \
             "Do not support algorithm {} (available: '{}')".format(
                 alg, "', '".join(
-                    list(ClassicalDiscovery.CLASSICAL_ALGOS.keys()) \
-                        + list(ClassicalDiscovery.CLASSICAL_ALGOS_TRANSITION.keys())
+                    list(ClassicalDiscovery.CLASSICAL_ALGOS.keys()) + list(ClassicalDiscovery.CLASSICAL_ALGOS_TRANSITION.keys())
                 ))
         assert (state_keys is not None and action_keys is not None and next_state_keys is not None) \
                 or (state_keys is None and action_keys is None and next_state_keys is None), \
                 "state, action, next states keys should all be None or not None"
+
         self._support_transition = state_keys is not None
 
         if self._support_transition:
@@ -606,6 +610,7 @@ class ClassicalDiscovery(DiscoveryModule):
         else:
             assert self._support_transition, f"{alg} only work for transition data"
             self._alg = ClassicalDiscovery.CLASSICAL_ALGOS_TRANSITION[alg]
+
         self._alg_args = alg_args
         self._state_keys = state_keys
         self._action_keys = action_keys
@@ -650,7 +655,8 @@ class ClassicalDiscovery(DiscoveryModule):
 
         if state_dim is not None and action_dim is not None:
             # build a transition graph
-            self._graph = TransitionGraph(graph_mat, state_dim, action_dim, is_real, thresh_info)
+            self._graph = TransitionGraph(graph_mat, state_dim, action_dim,
+                                          is_real, thresh_info)
         else:
             # build a regular graph
             self._graph = Graph(graph_mat, is_real, thresh_info)
@@ -678,13 +684,15 @@ class ClassicalDiscovery(DiscoveryModule):
                 "X%d" % i for i in range(state_dim+1, state_dim+action_dim+1))
             bg_rules = BackgroundKnowledge()
             # forbid next state -> state | action
-            bg_rules.add_forbidden_by_pattern(next_obs_pattern, obs_act_pattern)
+            bg_rules.add_forbidden_by_pattern(next_obs_pattern,
+                                              obs_act_pattern)
             # forbid action -> state
             bg_rules.add_forbidden_by_pattern(act_pattern, obs_pattern)
 
             # causal discovery algorithm, return a graph matrix
             # and whether the element of the matrix is real number
-            graph, is_real = self._alg(data, bg_rules=bg_rules, **self._alg_args)
+            graph, is_real = self._alg(data, bg_rules=bg_rules,
+                                       **self._alg_args)
         else:
             # build general rl transition variable classes
             inter_classes = [
@@ -702,7 +710,8 @@ class ClassicalDiscovery(DiscoveryModule):
 
             # causal discovery algorithm, return a graph matrix
             # and whether the element of the matrix is real number
-            graph, is_real = self._alg(data, inter_classes=inter_classes, **self._alg_args)
+            graph, is_real = self._alg(data, inter_classes=inter_classes, 
+                                       **self._alg_args)
 
         # build transition graph
         self._build_graph(graph, is_real, state_dim, action_dim)
@@ -735,8 +744,10 @@ class ClassicalDiscovery(DiscoveryModule):
             assert isinstance(data, dict), "need transition data format"
             assert self._support_transition, \
                 "fitting transition data needs specifying keys"
+
             states, actions, next_states = self._extract_data(data)
             state_dim, action_dim = states.shape[-1], actions.shape[-1]
+
             assert states.shape[0] == actions.shape[0] == next_states.shape[0], \
                 "Transition data shape mismatch"
 
@@ -744,6 +755,7 @@ class ClassicalDiscovery(DiscoveryModule):
             if self._use_residual:
                 assert next_states.shape[1] == states.shape[1]
                 next_states -= states
+
             data = np.concatenate([states, actions, next_states], axis=-1)
 
         else:
@@ -754,7 +766,8 @@ class ClassicalDiscovery(DiscoveryModule):
         # limited data samples
         limit = self._limit if self._limit is not None else data.shape[0]
         if limit <= data.shape[0]:
-            indices = np.random.choice(data.shape[0], size=limit, replace=False)
+            indices = np.random.choice(data.shape[0],
+                                       size=limit, replace=False)
             data = data[indices]
 
         # start fitting
@@ -1061,4 +1074,3 @@ if __name__ == "__main__":
         "binary transition graph by sparsity\n",
         async_discover_module.graph.get_binary_adj_matrix_by_sparsity(0.75)
     )
-

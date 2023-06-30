@@ -1,5 +1,5 @@
 '''
-Copyright 2021-2022 Polixir Technologies Co., Ltd.
+Copyright 2021-2023 Polixir Technologies Co., Ltd.
 
 This file is the fast launch scipts for use revive.
 '''
@@ -23,6 +23,8 @@ if __name__ == '__main__':
         help='name of the training `.npz` file.')
     parser.add_argument('-cf', '--config_file', type=str,
         help='name of the config `.yaml` file.')
+    parser.add_argument('-mrf', '--matcher_reward_file', type=str, default=None,
+        help='rule matcher reward file path.')
     parser.add_argument('-rf', '--reward_file', type=str, default=None,
         help='name of the reward function `.py` file, need to provide if you want to train policy.')
     parser.add_argument('-vf', '--val_file', type=str, default=None,
@@ -51,6 +53,7 @@ if __name__ == '__main__':
     dataset_file_path = os.path.join(DATADIR, args['data_file'])
     dataset_desc_file_path = os.path.join(DATADIR, args['config_file'])
     dataset_val_file_path = os.path.join(DATADIR, args['val_file']) if not args['val_file'] is None else None
+    matcher_reward_file_path = os.path.join(DATADIR, args['matcher_reward_file']) if not args['matcher_reward_file'] is None else None
     reward_file_path = os.path.join(DATADIR, args['reward_file']) if not args['reward_file'] is None else None
     revive_config_file_path = os.path.join(DATADIR, args['revive_config_file']) if not args['revive_config_file'] is None else None
     tuning_initial_state_file = os.path.join(DATADIR, args['tuning_initial_state_file']) if not args['tuning_initial_state_file'] is None else None
@@ -64,6 +67,7 @@ if __name__ == '__main__':
 
     server = ReviveServer(dataset_file_path, dataset_desc_file_path, 
                           val_file_path=dataset_val_file_path, 
+                          matcher_reward_file_path=matcher_reward_file_path,
                           reward_file_path=reward_file_path, 
                           target_policy_name=args['target_policy_name'],
                           log_dir=log_dir,
@@ -91,6 +95,7 @@ if __name__ == '__main__':
         task_table.add_row(["Virtual Environment", venv_status[1]["task_state"], venv_status[1]["venv_acc"], venv_status[1]["current_num_of_trials"], venv_status[1]["total_num_of_trials"]])
         task_table.add_row(["Policy Model", policy_status[1]["task_state"], policy_status[1]["policy_acc"], policy_status[1]["current_num_of_trials"], policy_status[1]["total_num_of_trials"]])
         print(task_table)
+        logger.info(task_table)
 
         try:
             if venv_status[1]['task_state'] == 'End' and policy_status[1]['task_state'] == 'End' and tuning_status[1]['task_state'] == 'End':
