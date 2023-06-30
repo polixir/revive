@@ -37,6 +37,13 @@
             "default": false
         },
         {
+            "name": "venv_rollout_horizon",
+            "abbreviation": "vrh",
+            "description": "Length of sampled trajectory, validate only if the algorithm works on sequential data.",
+            "type": "int",
+            "default": 20
+        },
+        {
             "name": "venv_gpus_per_worker",
             "abbreviation": "vgpw",
             "description": "Number of gpus per worker in venv training, small than 1 means launch multiple workers on the same gpu.",
@@ -54,6 +61,13 @@
             "description": "Algorithm used in venv training. There are currently three algorithms to choose from, `bc` and `revive_p`.",
             "type": "str",
             "default": "revive_p"
+        },
+        {
+            "name": "policy_algo",
+            "description": "Algorithm used in policy training. There are currently two algorithms to choose from, `ppo` and `sac`.",
+            "type": "str",
+            "default": "sac",
+            "doc": true
         },
         {
             "name": "policy_gpus_per_worker",
@@ -183,11 +197,22 @@
                 "description": "Repeat rollout more data to train generator.",
                 "type": "int",
                 "default": 2
+            },
+            {
+                "name": "mae_reward_weight",
+                "description": "reward = (1-mae_reward_weight)*matcher_reward + mae_reward_weight*mae_reward.",
+                "type": "float",
+                "default": 0.0
             }
         ]
     },
     "policy_algo_config": {
         "sac": [
+            {
+                "name": "policy_bc_epoch",
+                "type": "int",
+                "default": 100
+            },
             {
                 "name": "sac_batch_size",
                 "description": "Batch size of training process.",

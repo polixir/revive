@@ -29,6 +29,27 @@
             "default": false
         },
         {
+            "name": "use_time_step_embed",
+            "abbreviation": "utse",
+            "description": "Flag to use positional embedding for time step",
+            "type": "bool",
+            "default": true
+        },
+        {
+            "name": "time_step_embed_size",
+            "abbreviation": "tses",
+            "description": "embedding size of positional embedding for time step",
+            "type": "int",
+            "default": 64
+        },
+        {
+            "name": "use_traj_id_embed",
+            "abbreviation": "utie",
+            "description": "Flag to use binary embedding for trajetory id",
+            "type": "bool",
+            "default": true
+        },
+        {
             "name": "venv_rollout_horizon",
             "abbreviation": "vrh",
             "description": "Length of sampled trajectory, validate only if the algorithm works on sequential data.",
@@ -60,6 +81,13 @@
             "description": "How many steps between two plot rollout data. 0 means disable.",
             "type": "int",
             "default": 50
+        },
+        {
+            "name": "venv_save_frequency",
+            "abbreviation": "vsp",
+            "description": "How many epochs to save a model periodically. 0 means disable.",
+            "type": "int",
+            "default": 0
         },
         {
             "name": "rollout_dataset_mode",
@@ -198,11 +226,7 @@
                 "type": "int",
                 "default": 1,
                 "search_mode": "grid",
-                "search_values": [
-                    1,
-                    3,
-                    5
-                ]
+                "search_values": "[1,3,5]"
             },
             {
                 "name": "d_steps",
@@ -210,22 +234,15 @@
                 "type": "int",
                 "default": 1,
                 "search_mode": "grid",
-                "search_values": [
-                    1,
-                    3,
-                    5
-                ]
+                "search_values": "[1,3,5]"
             },
             {
                 "name": "g_lr",
-                "description": "Initial learning rate of the generator.",
+                "description": "Initial learning rate of the generator nodes nets.",
                 "type": "float",
                 "default": 4e-05,
                 "search_mode": "continuous",
-                "search_values": [
-                    1e-06,
-                    0.0001
-                ]
+                "search_values": "[1e-06,0.0001]"
             },
             {
                 "name": "d_lr",
@@ -233,10 +250,15 @@
                 "type": "float",
                 "default": 0.0006,
                 "search_mode": "continuous",
-                "search_values": [
-                    1e-06,
-                    0.001
-                ]
+                "search_values": "[1e-06,0.001]"
+            },
+            {
+                "name": "bc_weight_decay",
+                "description": "weight_decay in bc finetune",
+                "type": "float",
+                "default": 0.0001,
+                "search_mode": "continuous",
+                "search_values": "[1e-05,0.001]"
             }
         ],
         "bc": [
@@ -268,11 +290,7 @@
                 "type": "int",
                 "default": 4,
                 "search_mode": "grid",
-                "search_values": [
-                    3,
-                    4,
-                    5
-                ]
+                "search_values": "[3,4,5]"
             },
             {
                 "name": "policy_backbone",
@@ -281,10 +299,7 @@
                 "type": "str",
                 "default": "res",
                 "search_mode": "grid",
-                "search_values": [
-                    "mlp",
-                    "res"
-                ]
+                "search_values": "['mlp','res']"
             },
             {
                 "name": "g_lr",
@@ -292,10 +307,7 @@
                 "type": "float",
                 "default": 0.0001,
                 "search_mode": "continuous",
-                "search_values": [
-                    1e-06,
-                    0.001
-                ]
+                "search_values": "[1e-06,0.001]"
             },
             {
                 "name": "loss_type",
@@ -355,7 +367,79 @@
                 "type": "float",
                 "default": 4e-05,
                 "search_mode": "continuous",
-                "search_values": [1e-06,0.001]
+                "search_values": "[1e-06,0.001]"
+            }
+        ],
+        "sac": [
+            {
+                "name": "sac_batch_size",
+                "description": "Batch size of training process.",
+                "abbreviation": "pbs",
+                "type": "int",
+                "default": 1024
+            },
+            {
+                "name": "sac_epoch",
+                "description": "Number of epcoh for the training process.",
+                "abbreviation": "bep",
+                "type": "int",
+                "default": 200
+            },
+            {
+                "name": "sac_steps_per_epoch",
+                "description": "The number of update rounds of sac in each epoch.",
+                "abbreviation": "sspe",
+                "type": "int",
+                "default": 200
+            },
+            {
+                "name": "sac_rollout_horizon",
+                "abbreviation": "srh",
+                "type": "int",
+                "default": 20
+            },
+            {
+                "name": "policy_hidden_features",
+                "description": "Number of neurons per layer of the policy network.",
+                "abbreviation": "phf",
+                "type": "int",
+                "default": 256
+            },
+            {
+                "name": "policy_hidden_layers",
+                "description": "Depth of policy network.",
+                "abbreviation": "phl",
+                "type": "int",
+                "default": 4
+            },
+            {
+                "name": "policy_backbone",
+                "description": "Backbone of policy network.",
+                "abbreviation": "pb",
+                "type": "str",
+                "default": "mlp"
+            },
+            {
+                "name": "policy_hidden_activation",
+                "description": "hidden_activation of policy network.",
+                "abbreviation": "pha",
+                "type": "str",
+                "default": "leakyrelu"
+            },
+            {
+                "name": "buffer_size",
+                "description": "Size of the buffer to store data.",
+                "abbreviation": "bfs",
+                "type": "int",
+                "default": 1000000.0
+            },
+            {
+                "name": "g_lr",
+                "description": "Initial learning rate of the training process.",
+                "type": "float",
+                "default": 4e-05,
+                "search_mode": "continuous",
+                "search_values": "[1e-06,0.001]"
             }
         ]
     }

@@ -42,11 +42,11 @@ warnings.filterwarnings('ignore')
 def catch_error(func):
     '''push the training error message to data buffer'''
     def wrapped_func(self, *args, **kwargs):
-        #try:
+        return func(self, *args, **kwargs)
+        """
         if True:
             return func(self, *args, **kwargs)
         else:
-        #except Exception as e:
             error_message = traceback.format_exc()
             logger.warning('Detect error:{}, Error Message: {}'.format(e,error_message))
             ray.get(self._data_buffer.update_status.remote(self._traj_id, 'error', error_message))
@@ -65,6 +65,7 @@ def catch_error(func):
                 'now_metric' : np.inf,
                 'least_metric' : np.inf,
             }
+        """
     return wrapped_func
 
 class VenvOperator():
@@ -316,6 +317,24 @@ class VenvOperator():
                 self.val_models[model_index] = model.to(self._device)
         self.val_optimizers = self.optimizer_creator(self.val_models, config)
 
+    def _register_models_to_graph(self, graph : DesicionGraph, models : List[torch.nn.Module]):
+        index = 0
+        # register policy nodes 
+        for node_name in list(graph.keys()):
+            if node_name in graph.transition_map.values(): 
+                continue
+            node = graph.get_node(node_name)
+            if node.node_type == 'network':
+                node.set_network(models[index])
+                index += 1
+        # register transition nodes
+        for node_name in graph.transition_map.values():
+            node = graph.get_node(node_name)
+            if node.node_type == 'network':
+                node.set_network(models[index])
+                index += 1               
+        assert len(models) == index, f'Some models are not registered. Total models: {len(models)}, Registered: {index}.'
+
     @catch_error
     def __init__(self, config : dict):
         r'''setup everything for training.
@@ -339,6 +358,7 @@ class VenvOperator():
         self.least_val_metric = np.inf
         self.least_train_metric = np.inf
         self._acc = 0
+        self._num_venv_list = []
 
         # get id
         self._ip = ray._private.services.get_node_ip_address()
@@ -366,6 +386,8 @@ class VenvOperator():
             self._traj_id = 1
             self._traj_dir = os.path.join(self._workspace, 'venv_train')
 
+        update_env_vars("pattern", "venv")
+
         # setup constant
         self._stop_flag = False
         self._batch_cnt = 0
@@ -379,8 +401,8 @@ class VenvOperator():
         self._use_gpu = self.config["use_gpu"] and torch.cuda.is_available()
         self._device = 'cuda' if self._use_gpu else 'cpu' # fix problem introduced in ray 1.1
 
-        if "shooting_" in self.config['venv_metric']:
-            self.config['venv_metric'] = self.config['venv_metric'].replace("shooting_","rollout_")
+        # if "shooting_" in self.config['venv_metric']:
+        #     self.config['venv_metric'] = self.config['venv_metric'].replace("shooting_", "rollout_")
         if self.config['venv_metric'] in ["mae","mse","nll"]:
             self.config['venv_metric'] = "rollout_" + self.config['venv_metric']
         
@@ -393,18 +415,17 @@ class VenvOperator():
         self._register_models_to_graph(self.graph_train, self.nodes_models_train)
         self._register_models_to_graph(self.graph_val, self.nodes_models_val)
 
-        
         self.total_dim = 0
         for node_name in self._graph.metric_nodes:
             self.total_dim += self.config['total_dims'][node_name]['input']
 
-        self.nodes_map = {}
+        self.nodes_dim_name_map = {}
         for node_name in list(self._graph.nodes) + list(self._graph.leaf):
             node_dims = []
             for node_dim in self._graph.descriptions[node_name]:
                 node_dims.append(list(node_dim.keys())[0])
-            self.nodes_map[node_name] = node_dims
-        logger.info(f"Nodes : {self.nodes_map}")
+            self.nodes_dim_name_map[node_name] = node_dims
+        logger.info(f"Nodes : {self.nodes_dim_name_map}")
 
         self.graph_to_save_train = self.graph_train
         self.graph_to_save_val = self.graph_val
@@ -413,7 +434,7 @@ class VenvOperator():
 
         if self._traj_dir.endswith("venv_train"):
             if "venv.pkl" in os.listdir(self._traj_dir):
-                logger.info("Find exist checkpoint, Load the model.")
+                logger.info("Find existing checkpoint, Back up existing model.")
                 try:
                     self._traj_dir_bak = self._traj_dir+"_bak"
                     self._filename_bak = self._filename+"_bak"
@@ -435,23 +456,6 @@ class VenvOperator():
         if self.nums_nan_in_grad > 100:
             self._stop_flag = True
             logger.warning(f'Find too many nan in loss. Early stop.')
-
-    def _register_models_to_graph(self, graph : DesicionGraph, models : List[torch.nn.Module]):
-        index = 0
-        # register policy nodes 
-        for node_name in list(graph.keys()):
-            if node_name in graph.transition_map.values(): continue
-            node = graph.get_node(node_name)
-            if node.node_type == 'network':
-                node.set_network(models[index])
-                index += 1
-        # register transition nodes
-        for node_name in graph.transition_map.values():
-            node = graph.get_node(node_name)
-            if node.node_type == 'network':
-                node.set_network(models[index])
-                index += 1               
-        assert len(models) == index, f'Some models are not registered. Total models: {len(models)}, Registered: {index}.'
 
     def _early_stop(self, info : dict):
         info["stop_flag"] = self._stop_flag
@@ -509,7 +513,7 @@ class VenvOperator():
                 network = deepcopy(node.get_network()).cpu()
                 torch.save(network, os.path.join(path, node_name + '_train.pt'))
 
-        self.best_graph_val.reset()
+        best_graph_val.reset()
         for node_name in best_graph_val.keys():
             node = best_graph_val.get_node(node_name)
             if node.node_type == 'network':
@@ -528,6 +532,10 @@ class VenvOperator():
             venv = VirtualEnv([venv_train, venv_val])
             with open(os.path.join(path, model_prefixes + 'venv.pkl'), 'wb') as f:
                 pickle.dump(venv, f)
+
+            venv_list = ray.get(self._data_buffer.get_best_venv.remote()) #self._data_buffer.get_best_venv() #
+            with open(os.path.join(path, model_prefixes +'ensemble_env.pkl'), 'wb') as f:
+                pickle.dump(venv_list, f)
 
     def _load_best_models(self):
         best_graph_train = deepcopy(self.graph_train)
@@ -817,7 +825,11 @@ class VenvOperator():
 
         info[f"{self.NAME}/average_wdist_{scope}"] = np.sum(wdist_error) / self.total_dim
         return info
-
+    
+    @catch_error
+    def before_train_epoch(self):
+        update_env_vars("venv_epoch",self._epoch_cnt)
+        
     @catch_error
     def train_epoch(self):
         info = dict()
@@ -961,12 +973,28 @@ class VenvOperator():
                 
             
             # Save the k env for every task
-            if self._epoch_cnt % 1 == 0:
-                with TemporaryDirectory() as dirname:
-                    self._save_models(dirname)
-                    venv_train = torch.load(os.path.join(dirname, 'venv_train.pt'), map_location='cpu')
-                    venv_val = torch.load(os.path.join(dirname, 'venv_val.pt'), map_location='cpu')
-                self._data_buffer.update_venv_deque_dict.remote(self._traj_id, venv_train, venv_val)
+            _k = 1
+            while self._epoch_cnt % _k == 0:
+                if len(self._num_venv_list) < self.config['num_venv_store']:
+                    self._num_venv_list.append(info["now_metric"])
+                    pass
+                elif info["now_metric"] < np.max(self._num_venv_list):
+                    _del_index = np.argmax(self._num_venv_list)
+                    self._data_buffer.delet_deque_item.remote(self._traj_id, _del_index)
+                    self._num_venv_list.pop(_del_index)
+                    self._num_venv_list.append(info["now_metric"])
+                    pass
+                else:
+                    break
+
+                _best_graph_train = deepcopy(self.graph_train).to("cpu")
+                _best_graph_val   = deepcopy(self.graph_val).to("cpu")
+                _best_graph_train.reset()
+                _best_graph_val.reset()
+                _venv_train = VirtualEnvDev(_best_graph_train)
+                _venv_val = VirtualEnvDev(_best_graph_val)
+                self._data_buffer.update_venv_deque_dict.remote(self._traj_id, _venv_train, _venv_val)
+                break
 
         for k in list(info.keys()):
             if self.NAME in k:
@@ -990,7 +1018,7 @@ class VenvOperator():
                         rollout_dataset = self.train_dataset
                     # save rolllout action image
                     rollout_save_path = os.path.join(self._traj_dir, 'rollout_images')
-                    nodes_map = deepcopy(self.nodes_map)
+                    nodes_map = deepcopy(self.nodes_dim_name_map)
                     # del step_node
                     if "step_node_" in nodes_map.keys():
                         nodes_map.pop("step_node_")
@@ -1200,6 +1228,7 @@ class VenvAlgorithm:
             writer = SummaryWriter(algo_operator._traj_dir)
             epoch = 0
             while True:
+                algo_operator.before_train_epoch()
                 train_stats = algo_operator.train_epoch()
                 val_stats = algo_operator.validate()
                 session.report({"mean_accuracy": algo_operator._acc,

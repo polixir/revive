@@ -62,7 +62,6 @@ def customer_createTrain(machineCode: str,
 
     headers = {
     'requestId': uuid.uuid4().hex,
-    # 'Authorization': 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI5NTE5MzA4OTY5MzA0MzkxNjgiLCJleHAiOjE2NDkyMzU0Mjh9.HRb-btXtwI1_XVe9kLLwVW7y5zhpfOlc-Jp1GFWP2_Y'
     }
     response = requests.request("POST", url, headers=headers, data=payload, files=files, timeout=10)
     logger.info("customer_createTrain,{eval(response.text)['code']}")

@@ -1,0 +1,322 @@
+{
+    "base_config": [
+        {
+            "name": "train_venv_trials",
+            "abbreviation": "tvt",
+            "description": "Number of total trails searched by the search algorithm in venv training.",
+            "type": "int",
+            "default": 150,
+            "doc": true
+        },
+        {
+            "name": "global_seed",
+            "abbreviation": "gs",
+            "description": "Set the random number seed for the experiment.",
+            "type": "int",
+            "default": 42
+        },
+        {
+            "name": "val_split_ratio",
+            "abbreviation": "vsr",
+            "description": "Ratio to split validate dataset if it is not explicitly given.",
+            "type": "float",
+            "default": 0.5
+        },
+        {
+            "name": "val_split_mode",
+            "abbreviation": "vsm",
+            "description": "Mode of auto splitting training and validation dataset, choose from `outside_traj` and `inside_traj`. `outside_traj` means the split is happened outside the trajectories, one trajectory can only be in one dataset. `inside_traj` means the split is happened inside the trajectories, former part of one trajectory is in training set, later part is in validation set.",
+            "type": "str",
+            "default": "outside_traj"
+        },
+        {
+            "name": "ignore_check",
+            "abbreviation": "igc",
+            "description": "Flag to ignore data related check, force training.",
+            "type": "bool",
+            "default": false
+        },
+        {
+            "name": "venv_rollout_horizon",
+            "abbreviation": "vrh",
+            "description": "Length of sampled trajectory, validate only if the algorithm works on sequential data.",
+            "type": "int",
+            "default": 100
+        },
+        {
+            "name": "venv_gpus_per_worker",
+            "abbreviation": "vgpw",
+            "description": "Number of gpus per worker in venv training, small than 1 means launch multiple workers on the same gpu.",
+            "type": "float",
+            "default": 0.25
+        },
+        {
+            "name": "venv_metric",
+            "description": "Metric used to evaluate the trained venv, choose from `nll`, `mae`, `mse`, `wdist`.",
+            "type": "str",
+            "default": "mae"
+        },
+        {
+            "name": "venv_algo",
+            "description": "Algorithm used in venv training. There are currently three algorithms to choose from, `bc` and `revive_p`.",
+            "type": "str",
+            "default": "revive_p"
+        },
+        {
+            "name": "policy_algo",
+            "description": "Algorithm used in policy training. There are currently two algorithms to choose from, `ppo` and `sac`.",
+            "type": "str",
+            "default": "ppo",
+            "doc": true
+        },
+        {
+            "name": "policy_gpus_per_worker",
+            "abbreviation": "pgpw",
+            "description": "Number of gpus per worker in venv training, small than 1 means launch multiple workers on the same gpu.",
+            "type": "float",
+            "default": 0.25
+        },
+        {
+            "name": "save_start_epoch",
+            "abbreviation": "sse",
+            "description": "We only save models after this epoch, default is 0 which means we save models from the beginning.",
+            "type": "int",
+            "default": 0
+        },
+        {
+            "name": "num_venv_store",
+            "abbreviation": "nvs",
+            "description": "Max number of the chosen venv among the process of hyper-parameter search.",
+            "type": "int",
+            "default": 7
+        },
+        {
+            "name": "num_venv_in_use",
+            "abbreviation": "nviu",
+            "description": "Max number of venvs used in policy training, clipped when there is no enough venvs available.",
+            "type": "float",
+            "default": 1
+        },
+        {
+            "name": "test_horizon",
+            "abbreviation": "th",
+            "description": "Rollout length of the venv test.",
+            "type": "int",
+            "default": 100
+        },
+        {   "name" : "use_time_step_embed",
+            "abbreviation" : "utse",
+            "description" : "Flag to use positional embedding for time step",
+            "type" : "bool",
+            "default" : true,
+            "doc": true
+        },
+        {
+            "name" : "time_step_embed_size",
+            "abbreviation" : "tses",
+            "description" : "embedding size of positional embedding for time step",
+            "type" : "int",
+            "default" : 64,
+            "doc": true
+        },
+        {
+            "name" : "use_traj_id_embed",
+            "abbreviation" : "utie",
+            "description" : "Flag to use binary embedding for trajetory id",
+            "type" : "bool",
+            "default" : true,
+            "doc": true
+        }
+    ],
+    "venv_algo_config": {
+        "revive_p": [
+            {
+                "name": "revive_batch_size",
+                "description": "Batch size of training process.",
+                "abbreviation": "mbs",
+                "type": "int",
+                "default": 256
+            },
+            {
+                "name": "revive_epoch",
+                "description": "Number of epcoh for the training process",
+                "abbreviation": "mep",
+                "type": "int",
+                "default": 1500
+            },
+            {
+                "name": "policy_hidden_features",
+                "description": "Number of neurons per layer of the policy network.",
+                "abbreviation": "phf",
+                "type": "int",
+                "default": 256
+            },
+            {
+                "name": "policy_hidden_layers",
+                "description": "Depth of policy network.",
+                "abbreviation": "phl",
+                "type": "int",
+                "default": 3
+            },
+            {
+                "name": "policy_backbone",
+                "description": "Backbone of policy network.",
+                "abbreviation": "pb",
+                "type": "str",
+                "default": "mlp"
+            },
+            {
+                "name": "transition_hidden_features",
+                "description": "Number of neurons per layer of the transition network.",
+                "abbreviation": "thf",
+                "type": "int",
+                "default": 256
+            },
+            {
+                "name": "transition_hidden_layers",
+                "abbreviation": "thl",
+                "type": "int",
+                "default": 4
+            },
+            {
+                "name": "transition_backbone",
+                "description": "Backbone of Transition network.",
+                "abbreviation": "tb",
+                "type": "str",
+                "default": "res"
+            },
+            {
+                "name": "matcher_pretrain_epoch",
+                "abbreviation": "dpe",
+                "type": "int",
+                "default": 0
+            },
+            {
+                "name": "matcher_hidden_features",
+                "description": "Number of neurons per layer of the matcher network.",
+                "abbreviation": "dhf",
+                "type": "int",
+                "default": 256
+            },
+            {
+                "name": "matcher_hidden_layers",
+                "description": "Depth of the matcher network.",
+                "abbreviation": "dhl",
+                "type": "int",
+                "default": 4
+            },
+            {
+                "name": "g_steps",
+                "description": "The number of update rounds of the generator in each epoch.",
+                "type": "int",
+                "default": 1
+            },  
+            {
+                "name": "d_steps",
+                "description": "Number of update rounds of matcher in each epoch.",
+                "type": "int",
+                "default": 1
+            },
+            {
+                "name": "g_lr",
+                "description": "Initial learning rate of the generator.",
+                "type": "float",
+                "default": 1e-4
+            },
+            {
+                "name": "d_lr",
+                "description": "Initial learning rate of the matcher.",
+                "type": "float",
+                "default": 8e-4
+            },
+            {
+                "name": "generator_data_repeat",
+                "description": "Repeat rollout more data to train generator.",
+                "type": "int",
+                "default": 2
+            },
+            {
+                "name": "mae_reward_weight",
+                "description": "reward = (1-mae_reward_weight)*matcher_reward + mae_reward_weight*mae_reward.",
+                "type": "float",
+                "default": 0.0
+            }
+        ]
+    },
+    "policy_algo_config": {
+        "sac": [
+            {
+                "name": "policy_bc_epoch",
+                "type": "int",
+                "default": 100
+            },
+            {
+                "name": "sac_batch_size",
+                "description": "Batch size of training process.",
+                "abbreviation": "pbs",
+                "type": "int",
+                "default": 1024
+            },
+            {
+                "name" : "sac_rollout_horizon",
+                "abbreviation" : "srh",
+                "type" : "int",
+                "default" : 100,
+                "search_mode": "grid",
+                "search_values": [
+                    5,
+                    10,
+                    20
+                ]
+            }, 
+            {
+                "name": "sac_steps_per_epoch",
+                "description": "The number of update rounds of sac in each epoch.",
+                "abbreviation": "sspe",
+                "type": "int",
+                "default": 200
+            },
+            {
+                "name": "policy_hidden_features",
+                "description": "Number of neurons per layer of the policy network.",
+                "abbreviation": "phf",
+                "type": "int",
+                "default": 256
+            },
+            {
+                "name": "policy_hidden_layers",
+                "description": "Depth of policy network.",
+                "abbreviation": "phl",
+                "type": "int",
+                "default": 4
+            },
+            {
+                "name": "policy_backbone",
+                "description": "Backbone of policy network.",
+                "abbreviation": "pb",
+                "type": "str",
+                "default": "mlp"
+            },
+            {
+                "name": "buffer_size",
+                "description": "Size of the buffer to store data.",
+                "abbreviation": "bfs",
+                "type": "int",
+                "default": 1000000.0
+            },
+            {
+                "name": "g_lr",
+                "description": "Initial learning rate of the training process.",
+                "type": "float",
+                "default": 1e-03,
+                "search_mode": "grid",
+                "search_values": [
+                    2e-4,
+                    5e-4,
+                    8e-4,
+                    1e-3
+                ]
+            }
+        ]
+    }
+}

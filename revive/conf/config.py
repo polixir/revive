@@ -104,6 +104,30 @@ DEFAULT_CONFIG = [
         "default": None,
         'tune': False,
     },
+    {
+        'name' : 'use_time_step_embed',
+        'abbreviation' : 'utse',
+        'description' : 'Flag to use positional embedding for time step',
+        'type' : bool,
+        'default' : True,
+        'doc': True,
+    },
+    {
+        'name' : 'time_step_embed_size',
+        'abbreviation' : 'tses',
+        'description' : 'embedding size of positional embedding for time step',
+        'type' : int,
+        'default' : 64,
+        'doc': True,
+    },
+    {
+        'name' : 'use_traj_id_embed',
+        'abbreviation' : 'utie',
+        'description' : 'Flag to use binary embedding for trajetory id',
+        'type' : bool,
+        'default' : True,
+        'doc': True,
+    },
 
     # venv related config
     {
@@ -403,13 +427,7 @@ DEFAULT_CONFIG = [
         "description": "level of printed log. `0` means no printed log; `1` means minimal printed log; `2` means full log.",
         "type": int,
         "default": 1,
-    },
-    # {
-    #     "name": "rew_trans",
-    #     "description": "reward_transformation",
-    #     "type": bool,
-    #     "default": False,
-    # }
+    }
 ]
 
 DEBUG_CONFIG = deepcopy(DEFAULT_CONFIG)

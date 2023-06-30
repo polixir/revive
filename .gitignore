@@ -28,3 +28,4 @@ docs/_build/*
 *.pdf
 *_parsed.py
 *.out
+*_cn.py

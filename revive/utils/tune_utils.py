@@ -17,24 +17,43 @@ import sys
 import json
 import torch
 import numpy as np
+import logging, copy
+from ray.tune.experiment.trial import Trial
+from ray.tune.utils import merge_dicts, flatten_dict
+logger = logging.getLogger(__name__)
 from typing import Dict, List
 from collections import defaultdict
 from torch.utils.tensorboard import SummaryWriter
+from zoopt.parameter import ToolFunction
 from ray.tune.logger import LoggerCallback, CSVLoggerCallback, JsonLoggerCallback
 from ray.tune.utils import flatten_dict
 from ray.tune.error import TuneError
 from ray.tune import Stopper
+from ray.tune import CLIReporter as _CLIReporter
+from ray.tune.search.basic_variant import _flatten_resolved_vars, _count_spec_samples, _count_variants, _TrialIterator
+from ray.tune.experiment import _convert_to_experiment_list
+from ray.tune.search.basic_variant import warnings, Union, List, itertools, SERIALIZATION_THRESHOLD
+from ray.tune.search.zoopt.zoopt_search import DEFAULT_METRIC, Solution, zoopt
+from ray.tune.search.zoopt import ZOOptSearch as _ZOOptSearch
+from ray.tune.search import BasicVariantGenerator, SearchGenerator, Searcher
+from ray.tune.search.variant_generator import format_vars, _resolve_nested_dict, _flatten_resolved_vars
+from ray.tune.experiment.config_parser import _create_trial_from_spec 
 
 
 VALID_SUMMARY_TYPES = [int, float, np.float32, np.float64, np.int32, np.int64]
 
 class SysStopper(Stopper):
+    """Customizing the training mechanism of ray
+    
+    Reference : https://docs.ray.io/en/latest/tune/api/stoppers.html
+    """
     def __init__(self, workspace, max_iter: int = 0, stop_callback = None):
         self._workspace = workspace
         self._max_iter = max_iter
         self._iter = defaultdict(lambda: 0)
         self.stop_callback = stop_callback
 
+    # Customizing the stopping mechanism for a single trail
     def __call__(self, trial_id, result):
         if self._max_iter > 0:
             self._iter[trial_id] += 1
@@ -47,6 +66,7 @@ class SysStopper(Stopper):
         
         return False
 
+    # Customize the stopping mechanism for the entire training process
     def stop_all(self):
         if os.path.exists(os.path.join(self._workspace,'.env.json')):
             with open(os.path.join(self._workspace,'.env.json'), 'r') as f:
@@ -62,6 +82,8 @@ class TuneTBLoggerCallback(LoggerCallback):
     r"""
         custom tensorboard logger for ray tune
         modified from ray.tune.logger.TBXLogger
+        
+        Reference: https://docs.ray.io/en/latest/tune/api/doc/ray.tune.logger.LoggerCallback.html
     """
     def _init(self):
         self._file_writer = SummaryWriter(self.logdir)
@@ -88,32 +110,32 @@ class TuneTBLoggerCallback(LoggerCallback):
         if self._file_writer is not None:
             self._file_writer.flush()
 
+
 def get_tune_callbacks():
     TUNELOGGERCallbacks = [CSVLoggerCallback, JsonLoggerCallback, TuneTBLoggerCallback]
     TUNELOGGERCallbacks = [callback() for callback in TUNELOGGERCallbacks] 
 
     return TUNELOGGERCallbacks
 
-from ray.tune import CLIReporter as _CLIReporter
 
 class CLIReporter(_CLIReporter):
+    """Modifying the Command line reporter to support logging to loguru
+    
+    Reference : https://docs.ray.io/en/latest/tune/api/doc/ray.tune.CLIReporter.html
+    
+    """
     
     def report(self, trials: List, done: bool, *sys_info: Dict):
         message = self._progress_str(trials, done, *sys_info)
         from loguru import logger
         logger.info(f"{message}")
 
-import logging, copy
-from ray.tune.search import BasicVariantGenerator, SearchGenerator, Searcher
-from ray.tune.search.variant_generator import format_vars, _resolve_nested_dict, _flatten_resolved_vars
-from ray.tune.experiment.config_parser import _create_trial_from_spec 
-
-
-from ray.tune.experiment.trial import Trial
-from ray.tune.utils import merge_dicts, flatten_dict
-logger = logging.getLogger(__name__)
-
 class CustomSearchGenerator(SearchGenerator):
+    """
+    Customize the SearchGenerator by placing tags in the spec's config
+
+    Reference : https://github.com/ray-project/ray/blob/master/python/ray/tune/search/search_generator.py
+    """
     def create_trial_if_possible(self, experiment_spec, output_path):
         logger.debug("creating trial")
         trial_id = Trial.generate_id()
@@ -144,11 +166,12 @@ class CustomSearchGenerator(SearchGenerator):
             trial_id=trial_id)
         return trial
 
-from ray.tune.search.basic_variant import _flatten_resolved_vars, _count_spec_samples, _count_variants, _TrialIterator
-from ray.tune.experiment import _convert_to_experiment_list
-from ray.tune.search.basic_variant import warnings, Union, List, itertools, SERIALIZATION_THRESHOLD
-
 class TrialIterator(_TrialIterator):
+    """
+    Customize the _TrialIterator by placing tags in the spec's config
+
+    Reference : https://github.com/ray-project/ray/blob/master/python/ray/tune/search/basic_variant.py
+    """
     def create_trial(self, resolved_vars, spec):
         trial_id = self.uuid_prefix + ("%05d" % self.counter)
         experiment_tag = str(self.counter)
@@ -166,6 +189,11 @@ class TrialIterator(_TrialIterator):
             experiment_tag=experiment_tag)
 
 class CustomBasicVariantGenerator(BasicVariantGenerator):
+    """
+    Using custom TrialIterator instead _TrialIterator
+    
+    Reference : https://github.com/ray-project/ray/blob/master/python/ray/tune/search/basic_variant.py
+    """
     def add_configurations(
         self, experiments: Union["Experiment", List["Experiment"], Dict[str, Dict]]
     ):
@@ -202,12 +230,13 @@ class CustomBasicVariantGenerator(BasicVariantGenerator):
             self._iterators.append(iterator)
             self._trial_generator = itertools.chain(self._trial_generator,
                                                     iterator)
-            
-from zoopt.parameter import ToolFunction
-from ray.tune.search.zoopt.zoopt_search import DEFAULT_METRIC, Solution, zoopt
-from ray.tune.search.zoopt import ZOOptSearch as _ZOOptSearch
+        
 
 class Parameter(zoopt.Parameter):
+    """
+    Customize Zoom resource allocation method to fully utilize resources
+    
+    """
     def __init__(self, *args, **kwargs):
         self.parallel_num = kwargs.pop('parallel_num')
         super(Parameter, self).__init__(*args, **kwargs)
@@ -235,6 +264,10 @@ class Parameter(zoopt.Parameter):
 
 
 class ZOOptSearch(_ZOOptSearch):
+    """
+    Customize Zoom resource allocation method to fully utilize resources
+    
+    """
     def _setup_zoopt(self):
         if self._metric is None and self._mode:
             # If only a mode was passed, use anonymous metric
@@ -258,7 +291,6 @@ class ZOOptSearch(_ZOOptSearch):
         par = Parameter(budget=self._budget, init_samples=init_samples,parallel_num=self.parallel_num)
         if self._algo == "sracos" or self._algo == "asracos":
             from zoopt.algos.opt_algorithms.racos.sracos import SRacosTune
-
             self.optimizer = SRacosTune(
                 dimension=dim,
                 parameter=par,

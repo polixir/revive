@@ -82,7 +82,9 @@ class DataBufferEnv:
             
         self.venv_deque_dict[task_id].append((venv_train, venv_val))
         
-        
+    def delet_deque_item(self,task_id,index):
+        del self.venv_deque_dict[task_id][index]    
+
     def update_metric(self, task_id : int, metric : Dict[int, Union[float, VirtualEnvDev]]):
         self.metric_dict[task_id] = metric
         self.metric_dict = OrderedDict(sorted(self.metric_dict.items(), key=lambda x: x[1]['metric']))
@@ -98,13 +100,15 @@ class DataBufferEnv:
 
         self.venv_deque_dict[task_id].append((metric['venv_train'], metric['venv_val']))
         """
+        # self.update_venv_deque_dict(task_id, metric['venv_train'], metric['venv_val'])
 
         venv_list = self.get_venv_list()
-        if (len(venv_list) <= self.venv_max_num) and (self.best_id in self.venv_deque_dict.keys()):
-            venv_list += [venv_pair for venv_pair in list(self.venv_deque_dict[self.best_id])[:-1][::-1]]
-            venv_list = venv_list[:self.venv_max_num]
-        else:
-            venv_list = venv_list[:self.venv_max_num]
+        if len(self.metric_dict.values()) <= 1:
+            if (len(venv_list) <= self.venv_max_num) and (self.best_id in self.venv_deque_dict.keys()):
+                venv_list += [venv_pair for venv_pair in list(self.venv_deque_dict[self.best_id])[:-1][::-1]]
+                venv_list = venv_list[:self.venv_max_num]
+            else:
+                venv_list = venv_list[:self.venv_max_num]
         venv = VirtualEnv([pair[0] for pair in venv_list] + [pair[1] for pair in venv_list])
         self.set_best_venv(venv)
         
@@ -243,6 +247,9 @@ class DataBufferTuner:
 
 
 class Logger:
+    """
+    This is a class called Logger that logs key-value pairs.
+    """
     def __init__(self):
         self.log = {}
 
@@ -257,7 +264,7 @@ def trial_str_creator(trial):
 
 
 def catch_error(func):
-    '''push the training error message to data buffer'''
+    '''Push the training error message to data buffer'''
     def wrapped_func(self, *args, **kwargs):
         try:
             return func(self, *args, **kwargs)

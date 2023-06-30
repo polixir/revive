@@ -1,3 +1,5 @@
+import os
+import urllib.request
 import h5py
 import numpy as np
 
@@ -12,11 +14,24 @@ def get_keys(h5file):
     h5file.visititems(visitor)
     return keys
 
+def filepath_from_url(dataset_url):
+    _, dataset_name = os.path.split(dataset_url)
+    dataset_filepath = os.path.join(os.getcwd(), dataset_name)
+    return dataset_filepath
+
+def download_dataset_from_url(dataset_url):
+    dataset_filepath = filepath_from_url(dataset_url)
+    if not os.path.exists(dataset_filepath):
+        print('Downloading dataset:', dataset_url, 'to', dataset_filepath)
+        urllib.request.urlretrieve(dataset_url, dataset_filepath)
+    if not os.path.exists(dataset_filepath):
+        raise IOError("Failed to download dataset from %s" % dataset_url)
+    return dataset_filepath
+
 
 if __name__ == "__main__":
     # 加载 halfcheetah-medium-v2 数据集
-    # 请把 data_path 替换成对应的数据集路径
-    data_path = "/home/ubuntu/.d4rl/datasets/halfcheetah_medium-v2.hdf5"
+    data_path = download_dataset_from_url("http://rail.eecs.berkeley.edu/datasets/offline_rl/gym_mujoco_v2/halfcheetah_medium-v2.hdf5")
     data_dict = {}
     with h5py.File(data_path, 'r') as dataset_file:
         for k in get_keys(dataset_file):

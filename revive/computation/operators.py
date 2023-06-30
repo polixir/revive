@@ -12,6 +12,8 @@
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
     Lesser General Public License for more details.
 """
+""" The function of this document is mainly for use on the SAAS platform, 
+and maintenance will be temporarily suspended in the future."""
 import torch
 
 

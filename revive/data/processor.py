@@ -18,6 +18,7 @@ from typing import Dict
 
 from revive.data.batch import Batch
 
+
 class DataProcessor:
     """
         This class deal with the data mapping between original format and the computation format.
@@ -30,6 +31,11 @@ class DataProcessor:
                 If the variable is categorical, create an onehot vector.
 
         Mapping from computation to original is the reverse of these steps.
+        
+        Args:
+            data_configs (dict): A dictionary containing the configuration of the input data.
+            processing_params (dict): A dictionary containing the processing parameters.
+            orders (list): A list of variable orders for reordering the data.
     """
 
     def __init__(self, data_configs, processing_params, orders):
@@ -45,6 +51,7 @@ class DataProcessor:
     #                                Fuctions for Tensor                                  # 
 
     def _process_fn_torch(self, data : torch.Tensor, data_config, processing_params, order):
+        """This method applies the transformation to the input data tensor."""
         data = data[..., order['forward']]
         processed_data = []
         for config, s, param in zip(data_config, processing_params['forward_slices'], processing_params['additional_parameters']):
@@ -69,6 +76,7 @@ class DataProcessor:
         return torch.cat(processed_data, dim=-1)
 
     def _deprocess_fn_torch(self, data : torch.Tensor, data_config, processing_params, order):
+        """This method applies the inverse transformation to the input data tensor to obtain the original data."""
         processed_data = []
         for config, s, param in zip(data_config, processing_params['backward_slices'], processing_params['additional_parameters']):
             _data = data[..., s]
@@ -104,7 +112,7 @@ class DataProcessor:
         """
         if key in self.keys:
             return self._process_fn_torch(data, self.data_configs[key], self.processing_params[key], self.orders[key])
-        else: # do nothing
+        else:
             return data
 
     def deprocess_single_torch(self, data : torch.Tensor, key: str) -> torch.Tensor:
@@ -114,7 +122,7 @@ class DataProcessor:
         """
         if key in self.keys:
             return self._deprocess_fn_torch(data, self.data_configs[key], self.processing_params[key], self.orders[key])
-        else: # do nothing
+        else:
             return data
 
     def process_torch(self, data):
@@ -134,6 +142,7 @@ class DataProcessor:
     #                                Fuctions for ndarray                                 # 
 
     def _process_fn(self, data : np.ndarray, data_config, processing_params, order):
+        """This method applies the transformation to the input data array."""
         data = data.take(order['forward'], axis=-1)
         processed_data = []
         for config, s, param in zip(data_config, processing_params['forward_slices'], processing_params['additional_parameters']):
@@ -155,6 +164,7 @@ class DataProcessor:
         return np.concatenate(processed_data, axis=-1)
 
     def _deprocess_fn(self, data : np.ndarray, data_config, processing_params, order):
+        """This method applies the inverse transformation to the input data array to obtain the original data."""
         processed_data = []
         for config, s, param in zip(data_config, processing_params['backward_slices'], processing_params['additional_parameters']):
             _data = data[..., s]
@@ -184,7 +194,7 @@ class DataProcessor:
         """
         if key in self.keys:
             return self._process_fn(data, self.data_configs[key], self.processing_params[key], self.orders[key])
-        else: # do nothing
+        else:
             return data
 
     def deprocess_single(self, data : np.ndarray, key: str) -> np.ndarray:
@@ -193,7 +203,7 @@ class DataProcessor:
         """
         if key in self.keys:
             return self._deprocess_fn(data, self.data_configs[key], self.processing_params[key], self.orders[key])
-        else: # do nothing
+        else:
             return data
 
     def process(self, data : Dict[str, np.ndarray]):

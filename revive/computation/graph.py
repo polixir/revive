@@ -127,7 +127,6 @@ class NetworkDecisionNode(DesicionNode):
     def __init__(self, name: str, input_names: List[str], input_descriptions: List[Dict[str, Dict[str, Any]]]):
         super().__init__(name, input_names, input_descriptions)
         self.network = None
-        self.use_feature_embed = False
 
     def set_network(self, network : torch.nn.Module):
         ''' set the network from a different source '''
@@ -149,17 +148,14 @@ class NetworkDecisionNode(DesicionNode):
                            norm : str = None, 
                            transition_mode : Optional[str] = None,
                            obs_dim : Optional[int] = None,
-                           node_embed : bool = False,
                            *args, **kwargs):
 
         ''' initialize the network of this node '''
         if self.network:
             logger.warning("The node network has been initialized. Skip initialization")
-            return 
-        
-        if node_embed:
-            assert isinstance(input_dim, dict), "input_dim must be dict if you use node embedding"
-            self.use_feature_embed = True
+            return
+
+        kwargs['node_name'] = self.name
         
         if is_transition:
             if backbone_type in ['mlp', 'res', 'transformer']:
@@ -171,7 +167,7 @@ class NetworkDecisionNode(DesicionNode):
                                                 backbone_type=backbone_type,
                                                 mode=transition_mode, 
                                                 obs_dim=obs_dim,
-                                                use_feature_embed=self.use_feature_embed)
+                                                **kwargs)
             elif backbone_type in ['gru', 'lstm']:
                 assert isinstance(input_dim, int), "assert isinstance(input_dim, int)"
                 network = RecurrentRESTransition(input_dim, output_dim,
@@ -179,7 +175,8 @@ class NetworkDecisionNode(DesicionNode):
                                               dist_config, backbone_type=backbone_type,
                                               mode=transition_mode, obs_dim=obs_dim,
                                               rnn_hidden_features=kwargs['rnn_hidden_features'],
-                                              joint_train=False)
+                                              window_size=kwargs['window_size'],
+                                              **kwargs)
             else:
                 raise ValueError(f'Initializing node `{self.name}`, backbone type {backbone_type} is not supported!')
         else:
@@ -190,19 +187,21 @@ class NetworkDecisionNode(DesicionNode):
                                             norm=norm, 
                                             hidden_activation=hidden_activation,
                                             backbone_type=backbone_type,
-                                            use_feature_embed=self.use_feature_embed)         
+                                            **kwargs)         
             elif backbone_type in ['gru', 'lstm']:
                 assert isinstance(input_dim, int), "assert isinstance(input_dim, int)"
                 network = RecurrentRESPolicy(input_dim, output_dim,
                                                 hidden_features, hidden_layers,
                                                 dist_config, backbone_type=backbone_type,
                                                 rnn_hidden_features=kwargs['rnn_hidden_features'],
-                                                joint_train=False)
+                                                window_size=kwargs['window_size'],
+                                                **kwargs)
             elif backbone_type in ['contextual_gru', 'contextual_lstm']:
                 assert isinstance(input_dim, int), "assert isinstance(input_dim, int)"
                 network = ContextualPolicy(input_dim, output_dim,
                                           hidden_features, hidden_layers,
-                                          dist_config, backbone_type)
+                                          dist_config, backbone_type,
+                                          **kwargs)
             else:
                 raise ValueError(f'Initializing node `{self.name}`, backbone type {backbone_type} is not supported!')
 
@@ -214,7 +213,8 @@ class NetworkDecisionNode(DesicionNode):
             NOTE: The input data was transferred by self.processor. You can use `self.processor.deprocess_torch(data)` to get the original data.
         '''
         data = self.get_inputs(data)
-        inputs = torch.cat([data[k] for k in self.input_names], dim=-1) if not self.use_feature_embed else data
+        inputs = data if hasattr(self, 'custom_node') else torch.cat([data[k] for k in self.input_names], dim=-1)
+        kwargs['input_names'] = self.input_names
         output_dist = self.network(inputs, *args, **kwargs) 
         return output_dist
         
@@ -488,11 +488,11 @@ class DesicionGraph:
             if node_name in policy_node:            # do not judge policy node
                 continue
 
-            source_node = source_graph.get_node(node_name)
-
             if target_node.node_type == "function": # do not judge env node with defined expert function
                 logger.warning(f'Detected "{node_name}" is attached with a expert function. Please check if it is RIGHT?!')
-                pass
+                continue
+
+            source_node = source_graph.get_node(node_name)
 
             if target_node.input_names != source_node.input_names:
                 logger.warning(f'Detected "{node_name}" is attached with different input names. Please check if it is RIGHT?!')

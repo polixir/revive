@@ -16,8 +16,8 @@ setup(
     packages=find_packages(),
     version=__version__,
     install_requires=[
-        'torch>=1.12',
-        'pyro-ppl==1.8.2',
+        'torch==1.13.1',
+        'pyro-ppl==1.8.4',
         'ray[default]==2.1.0',
         'bayesian-optimization',
         'loguru',
