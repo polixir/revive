@@ -13,6 +13,7 @@ train_policy.json
 *.pkl
 *.out
 ZOOpt
+data/*
 tests/data/*fix
 .aim/
 apex/
