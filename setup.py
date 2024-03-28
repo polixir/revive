@@ -43,6 +43,7 @@ setup(
         'prettytable',
         'wurlitzer',
         'causal-learn==0.1.3.0',
+        'pydantic==1.10.13',
     ],
     url="https://agit.ai/Polixir/revive"
 )
